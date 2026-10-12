@@ -88,8 +88,12 @@ export default function MonitorsTab({
   const watches = (linkOf("monitoring")?.inlineSettings as { watches?: Array<{ watchType?: string; name?: string; enabled?: boolean }> } | undefined)?.watches ?? [];
 
   const [ledgerRevision, setLedgerRevision] = useState(0);
+  // Bumped on conversion so the monitor catalog is re-read; otherwise a freshly
+  // converted monitor renders as "Monitor deleted" until reload (#6888).
+  const [catalogRevision, setCatalogRevision] = useState(0);
   const refreshLinks = async () => {
     setLedgerRevision((n) => n + 1);
+    setCatalogRevision((n) => n + 1);
     const res = await fetchWithAuth(`/configuration-policies/${policyId}/features`);
     if (!res.ok) return;
     const json = await res.json();
@@ -139,6 +143,8 @@ export default function MonitorsTab({
     }
     let cancelled = false;
     setCatalogLoading(true);
+    // The effect re-runs after a conversion; a prior load error must not outlive a good refetch.
+    setCatalogError(undefined);
     fetchWithAuth(meta.fetchUrl)
       .then(async (res) => {
         if (!res.ok) {
@@ -183,7 +189,7 @@ export default function MonitorsTab({
     return () => {
       cancelled = true;
     };
-  }, [meta.fetchUrl]);
+  }, [meta.fetchUrl, catalogRevision]);
 
   const catalogById = new Map(catalog.map((c) => [c.id, c]));
   const attachedIds = new Set(items.map((it) => it.monitorId));
