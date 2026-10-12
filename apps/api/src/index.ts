@@ -21,6 +21,8 @@ import { agentAdmission } from './middleware/agentAdmission';
 import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
+import { exceptTunnelSurface, isTunnelSurface, tunnelHostClassifier, tunnelHostDispatch } from './middleware/tunnelHostDispatch';
+import { tunnelHostRoutes } from './routes/tunnelHost';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
 import { configRoutes } from './routes/config';
@@ -461,6 +463,10 @@ app.use('*', requestPathLogger());
 // and any body read. O(1), no I/O, never inside a DB context. A pass-through
 // until the admission controller starts, and in BREEZE_ADMISSION_MODE=off.
 app.use('*', agentAdmission());
+// Network Proxy host mode (spec 2026-10-06 §3): classify by Host + the Caddy
+// tunnel-site assertion. Runs after metrics/logging (they cover tunnel traffic)
+// and before every app header/CORS middleware (those skip tunnel surfaces).
+app.use('*', tunnelHostClassifier());
 
 // The tunnel-http proxy route (routes/tunnelHttp.ts) sets its own response
 // headers on every request — a restrictive sandboxed CSP that intentionally
@@ -471,7 +477,9 @@ app.use('*', agentAdmission());
 // wrong for that one route: applied on top, they silently won the merge over
 // the route's own response and broke iframe embedding entirely (the route's
 // sandbox CSP never reached the browser). Skip only the conflicting header
-// output for that path prefix; every other route keeps it unchanged.
+// output for that path prefix; every other route keeps it unchanged. Tunnel
+// hosts (host mode) are exempted the same way via `exceptTunnelSurface` /
+// `skipHeadersWhen`.
 //
 // `securityMiddleware()` also enforces FORCE_HTTPS redirect and
 // canonical-Host rejection, which have nothing to do with the CSP conflict
@@ -479,7 +487,7 @@ app.use('*', agentAdmission());
 // its own `skipHeadersPathPrefix` option (headers only), not via
 // `exceptTunnelHttp`, which would drop that transport enforcement as well.
 const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
-const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, mw);
+const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface(mw));
 
 app.use(
   '*',
@@ -495,7 +503,7 @@ app.use(
     })
   )
 );
-app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX }));
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -504,6 +512,9 @@ app.use(
   })
 );
 app.use('*', globalRateLimit());
+// Tunnel hosts end here: the body limit (fixed policy on tunnel surfaces, not
+// path-keyed), rate limit (tunnel bucket, no path skips), metrics and logging ran; no app route, auth, prettyJSON or CORS is reachable on a tunnel host.
+app.use('*', tunnelHostDispatch(tunnelHostRoutes));
 app.use('*', prettyJSON());
 app.use(
   '*',
