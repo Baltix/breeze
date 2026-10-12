@@ -52,6 +52,7 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from './ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from './ticketMoveApprovalGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
 import { canManageTimeEntryBilling } from './timeEntryBillingPermission';
 import {
@@ -168,7 +169,8 @@ function serviceErrorToJson(err: unknown): string | null {
     return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   // #8181: block-drawn time cannot change org; nothing the AI can override.
-  if (err instanceof TicketMoveHourBlockError) {
+  // #4617: a pending customer approval request blocks the move the same way.
+  if (err instanceof TicketMoveHourBlockError || err instanceof TicketMoveApprovalPendingError) {
     return JSON.stringify({ error: err.message, code: err.code, details: err.details });
   }
   return null;
@@ -382,7 +384,9 @@ function parseAlertOverrides(value: unknown): ParseResult<Partial<Pick<CreateTic
   return { value: overrides };
 }
 
-const TIME_BILLING_STATUSES = ['not_billed', 'billed', 'no_charge', 'contract'] as const;
+// Read-filter only (list_time_entries); no AI tool writes billingStatus. 'awaiting_approval' is
+// owned by the customer-approval gate and must never be added to a write path.
+const TIME_BILLING_STATUSES = ['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval'] as const;
 
 function timeScopeRefusal(auth: AuthContext): string | null {
   // GET /time-entries is requireScope('partner','system') (timeEntries.ts:23) — no org axis on time_entries (spec D4).
@@ -490,7 +494,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           from: { type: 'string', description: 'ISO-8601 start (inclusive)' },
           to: { type: 'string', description: 'ISO-8601 end (exclusive)' },
           running: { type: 'boolean', description: 'Only entries with no end time' },
-          billingStatus: { type: 'string', enum: [...TIME_BILLING_STATUSES], description: 'Billing status: not_billed, billed, no_charge, contract' },
+          billingStatus: { type: 'string', enum: [...TIME_BILLING_STATUSES], description: 'Billing status: not_billed, billed, no_charge, contract, awaiting_approval (held until the customer approves)' },
           approved: { type: 'boolean' },
           limit: { type: 'number', description: 'Max rows (default 50, max 200)' },
           offset: { type: 'number', description: 'Rows to skip (default 0)' },
