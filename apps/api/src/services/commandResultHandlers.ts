@@ -56,6 +56,7 @@ import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { evaluateScriptExitCodeAlert, type ScriptTriggerType } from './scriptExitCodeAlerts';
 import { advanceOutcomesForTerminalExecution } from './fixMemory/scriptTerminalHook';
+import { emitScriptTerminalEvent } from './scriptTerminalEvents';
 import { enqueueScriptVerify } from './scriptProposals/verify';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
@@ -414,6 +415,9 @@ function terminalExecutionProjection() {
     // #6690: the exit-code alert needs the execution's own org and trigger lane.
     orgId: scriptExecutions.orgId,
     triggerType: scriptExecutions.triggerType,
+    // #7277: identifies the automation run that queued the execution, so the
+    // public terminal event carries what the fan-out's loop guard needs.
+    automationRunId: scriptExecutions.automationRunId,
   } as const;
 }
 
@@ -423,6 +427,7 @@ type TerminalExecution = {
   proposalId: string | null;
   orgId: string;
   triggerType: ScriptTriggerType;
+  automationRunId: string | null;
 };
 
 function isCustomFieldWritesEnvelope(value: unknown): boolean {
@@ -857,6 +862,29 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutionBatches.id, batchId),
             eq(scriptExecutionBatches.scriptId, countedExecution.scriptId)
           ));
+      }
+
+      // #7277 — public script.completed / script.failed. Keyed on the same fence
+      // as the batch counter: only the writer that TERMINALISED the row emits,
+      // so the #3607 recovery and #3525 late-output paths (rows a sweep already
+      // closed, and already announced) never double-fire automations. A proven
+      // cancel emits nothing. Deferred until the surrounding transaction
+      // commits. Registered LAST on purpose: the REST ingest path runs this
+      // handler in a SAVEPOINT of a request transaction that still commits
+      // after the savepoint rolls back (it parks the command), and a task
+      // registered inside a rolled-back savepoint is not dropped. Nothing after
+      // this point can throw, so the event is only queued for a final state.
+      if (countedExecution && !cancelConfirmed) {
+        emitScriptTerminalEvent({
+          executionId: countedExecution.id,
+          orgId: countedExecution.orgId,
+          deviceId: resolvedDeviceId,
+          scriptId: countedExecution.scriptId,
+          triggerType: countedExecution.triggerType,
+          automationRunId: countedExecution.automationRunId ?? null,
+          exitCode: executionValues.exitCode,
+          status: scriptStatus,
+        });
       }
     }
   } catch (err) {
