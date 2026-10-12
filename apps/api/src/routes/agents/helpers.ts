@@ -83,6 +83,8 @@ import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached, type G
 import { captureException } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
+import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
@@ -1596,11 +1598,47 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
   return osRootScanPath(osType);
 }
 
+const FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const filesystemPolicySkipLoggedAt = new Map<string, number>();
+// A refused threshold scan writes no snapshot/command row, so the DB cooldown
+// never engages for that device. Remember the refusal briefly so a locked-down
+// device at >= threshold does not repeat the cooldown selects and policy lookup
+// on every heartbeat.
+const FILESYSTEM_POLICY_DENY_TTL_MS = 5 * 60 * 1000;
+const filesystemThresholdDeniedUntil = new Map<string, number>();
+
+/**
+ * The automatic triggers (disk-threshold scan, auto-resume continuation) must
+ * honour the same per-device remote-tools policy the REST route and AI tools
+ * enforce (#8509). Fail-closed via `checkDeviceRemoteToolsPolicy`. A refusal
+ * is counted and logged at most once an hour per device+trigger; not Sentry.
+ */
+async function automaticFilesystemScanAllowed(
+  deviceId: string,
+  trigger: FilesystemAutoTrigger,
+): Promise<boolean> {
+  const decision = await checkDeviceRemoteToolsPolicy(deviceId);
+  if (decision.allowed) return true;
+  recordFilesystemAutoTriggerSkipped(trigger);
+  const key = `${deviceId}:${trigger}`;
+  const now = Date.now();
+  if (now - (filesystemPolicySkipLoggedAt.get(key) ?? 0) >= FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS) {
+    filesystemPolicySkipLoggedAt.set(key, now);
+    console.warn(
+      `[agents/helpers] skipping automatic filesystem_analysis (${trigger}) for device ${deviceId}: ${decision.reason}`
+    );
+  }
+  return false;
+}
+
 export async function maybeQueueThresholdFilesystemAnalysis(
   device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
+    return { queued: false };
+  }
+  if ((filesystemThresholdDeniedUntil.get(device.id) ?? 0) > Date.now()) {
     return { queued: false };
   }
   // A device parked in a holding org receives lifecycle removal only.
@@ -1641,6 +1679,14 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   if (recentCommand) {
     return { queued: false };
   }
+
+  // Last, so an allowed device looks the policy up at most once per cooldown;
+  // a refused one is remembered for FILESYSTEM_POLICY_DENY_TTL_MS.
+  if (!(await automaticFilesystemScanAllowed(device.id, 'threshold'))) {
+    filesystemThresholdDeniedUntil.set(device.id, Date.now() + FILESYSTEM_POLICY_DENY_TTL_MS);
+    return { queued: false };
+  }
+  filesystemThresholdDeniedUntil.delete(device.id);
 
   const path = getFilesystemThresholdScanPath(device.osType);
   const [thresholdCommand] = await db.insert(deviceCommands).values({
@@ -1870,6 +1916,12 @@ export async function handleFilesystemAnalysisCommandResult(
     .limit(1);
 
   if (inFlightScan) {
+    return;
+  }
+
+  // An operator who turned remote tools off stops the chain at its next step
+  // (no retroactive cancel of a scan already running on the device).
+  if (!(await automaticFilesystemScanAllowed(command.deviceId, 'auto_resume'))) {
     return;
   }
 
