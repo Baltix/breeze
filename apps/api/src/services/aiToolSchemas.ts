@@ -10,7 +10,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
+import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
   proposeScriptInputSchema,
@@ -395,8 +395,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       // P2-4 (#4191) ticket-triage executors.
       'link_device',
       'draft',
+      // #8596 ticket-to-ticket links.
+      'list_links',
+      'link_ticket',
+      'unlink_ticket',
     ]),
     ticketId: uuid.optional(),
+    // create: the type; list: one type or several (#8596).
+    ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
+    targetTicketId: uuid.optional(),
+    targetTicketNumber: z.string().min(1).max(64).optional(),
+    linkType: ticketLinkTypeSchema.optional(),
+    linkId: uuid.optional(),
     alertId: uuid.optional(),
     commentId: uuid.optional(),
     expectedTicketId: uuid.optional(),
@@ -421,7 +431,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     // here. Keep the two in sync if either changes.
     hostname: z.string().min(1).max(255).optional(),
     serial: z.string().min(1).max(100).optional(),
-    ...pageZodShape(20, 100),
+    ...pageZodShape(18, 100),
     // draft (P2-4): which ticket_drafts kind this proposal is.
     kind: z.enum(['reply', 'resolution_note']).optional(),
     isPublic: z.boolean().optional(),
@@ -446,6 +456,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       submittedBy: uuid.nullable().optional(),
       submitterName: z.string().max(255).nullable().optional(),
       submitterEmail: z.string().email().max(255).nullable().optional(),
+      ticketType: ticketTypeSchema.optional(),
     }).optional(),
     overrides: z.object({
       subject: z.string().min(1).max(255).optional(),
