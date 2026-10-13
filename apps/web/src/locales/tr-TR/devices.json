@@ -2679,7 +2679,8 @@
       "software": {
         "installed": "Yazılım Yüklü",
         "notInstalled": "Eksik Yazılım"
-      }
+      },
+      "logShippingFailing": "Günlük gönderimi başarısız"
     }
   },
   "filterChipBar": {
@@ -2748,7 +2749,8 @@
       "software": {
         "installed": "Yazılım Yüklü",
         "notInstalled": "Eksik Yazılım"
-      }
+      },
+      "logShippingFailing": "Günlük gönderimi başarısız"
     }
   },
   "filterHelpPopover": {
@@ -2834,7 +2836,8 @@
       "software": {
         "installed": "Yazılım Yüklü",
         "notInstalled": "Eksik Yazılım"
-      }
+      },
+      "logShippingFailing": "Günlük gönderimi başarısız"
     }
   },
   "filterValueEditor": {
@@ -3450,6 +3453,7 @@
     "ariaLabel": "Hızlı ekleme filtreleri",
     "chips": {
       "critical": "Kritik",
+      "logShippingFailing": "Günlük gönderimi başarısız",
       "lowDisk": "Düşük Disk",
       "needsPatches": "Yamalara İhtiyaç Var",
       "notSeen7d": "7 gündür görülmedi",

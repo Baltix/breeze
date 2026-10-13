@@ -2679,7 +2679,8 @@
       "software": {
         "installed": "Tiene software instalado",
         "notInstalled": "Software faltante"
-      }
+      },
+      "logShippingFailing": "Envío de registros con fallas"
     }
   },
   "filterChipBar": {
@@ -2748,7 +2749,8 @@
       "software": {
         "installed": "Tiene software instalado",
         "notInstalled": "Software faltante"
-      }
+      },
+      "logShippingFailing": "Envío de registros con fallas"
     }
   },
   "filterHelpPopover": {
@@ -2834,7 +2836,8 @@
       "software": {
         "installed": "Tiene software instalado",
         "notInstalled": "Software faltante"
-      }
+      },
+      "logShippingFailing": "Envío de registros con fallas"
     }
   },
   "filterValueEditor": {
@@ -3450,6 +3453,7 @@
     "ariaLabel": "Filtros de adición rápida",
     "chips": {
       "critical": "Crítico",
+      "logShippingFailing": "Envío de registros con fallas",
       "lowDisk": "Disco bajo",
       "needsPatches": "Necesita parches",
       "notSeen7d": "No visto 7 d",

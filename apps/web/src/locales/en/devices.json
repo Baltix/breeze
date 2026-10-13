@@ -2679,7 +2679,8 @@
       "software": {
         "installed": "Has Software Installed",
         "notInstalled": "Missing Software"
-      }
+      },
+      "logShippingFailing": "Log Shipping Failing"
     }
   },
   "filterChipBar": {
@@ -2748,7 +2749,8 @@
       "software": {
         "installed": "Has Software Installed",
         "notInstalled": "Missing Software"
-      }
+      },
+      "logShippingFailing": "Log Shipping Failing"
     }
   },
   "filterHelpPopover": {
@@ -2834,7 +2836,8 @@
       "software": {
         "installed": "Has Software Installed",
         "notInstalled": "Missing Software"
-      }
+      },
+      "logShippingFailing": "Log Shipping Failing"
     }
   },
   "filterValueEditor": {
@@ -3450,6 +3453,7 @@
     "ariaLabel": "Quick-add filters",
     "chips": {
       "critical": "Critical",
+      "logShippingFailing": "Log Shipping Failing",
       "lowDisk": "Low Disk",
       "needsPatches": "Needs Patches",
       "notSeen7d": "Not seen 7d",
