@@ -36,6 +36,24 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     }
   });
 
+  it('keeps caller-verification readiness and drops a malformed report to absent (#6354 W02)', () => {
+    const ok = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: { callerVerify: true, usernames: ['alex'] } });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.helperCapabilities).toEqual({ callerVerify: true, usernames: ['alex'] });
+
+    for (const bad of [
+      { callerVerify: 'yes', usernames: ['alex'] },
+      { callerVerify: true, usernames: 'alex' },
+      { callerVerify: true, usernames: [''] },
+      { callerVerify: true, usernames: Array.from({ length: 33 }, (_, i) => `u${i}`) },
+      'ready',
+    ]) {
+      const r = heartbeatSchema.safeParse({ ...minimal, helperCapabilities: bad });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.helperCapabilities).toBeUndefined();
+    }
+  });
+
   // Agents from #8618 W1 send a bounded `watchdogInstall` object; since W2
   // (#8620) the API ingests it. The wire field is z.unknown(), so a beat
   // carrying it — well-formed or not — is always accepted and the value is

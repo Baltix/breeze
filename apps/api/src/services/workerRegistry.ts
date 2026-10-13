@@ -1402,13 +1402,28 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Caller verification (#6354 W01) — post-commit publisher: rejection
     // notifications (in-app + email) and W02/W03 challenge delivery/timeouts,
-    // driven off scalar markers on the verification row. 'global': no
-    // agent-socket-local dependency.
+    // driven off scalar markers on the verification row. 'socket-owner'
+    // since W02: workstation delivery claims the pre-created caller_verify
+    // command through the same claim-time eligibility as the heartbeat
+    // (commandDispatch), whose closure reaches socket-local dispatch.
     name: 'callerVerificationPublisher',
-    placement: 'global',
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/callerVerificationPublisher');
       return { init: m.initializeCallerVerificationPublisher, shutdown: m.shutdownCallerVerificationPublisher };
+    },
+  },
+  {
+    // Caller verification (#6354 W02) — repairs workstation decisions the
+    // transports could not finish (terminal command results, late "not me"
+    // receipts) through the same leaf result handler. 'socket-owner': the
+    // caller-verification service graph includes workstation delivery, which
+    // claims commands through commandDispatch (same as the publisher).
+    name: 'callerVerificationReconciliation',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/callerVerificationReconciliation');
+      return { init: m.initializeCallerVerificationReconciliation, shutdown: m.shutdownCallerVerificationReconciliation };
     },
   },
   {
