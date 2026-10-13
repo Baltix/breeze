@@ -122,6 +122,65 @@ func (h *Heartbeat) EnableWatchdogEnsure() {
 		now:          time.Now,
 		rnd:          rand.Float64,
 	}
+	h.seedWatchdogInstallReport()
+}
+
+// seedWatchdogInstallReport sets the in-memory report from what is already on
+// disk, so the first heartbeat after a restart carries the persisted state.
+// Without it the report is nil until the server next signals
+// watchdogUpgradeTo; the API reads an absent field as healthy, clears the
+// devices.watchdog_install_* columns, and the next beat restarts `since`
+// (#8672).
+//
+// It follows the read-only checks of ensureWatchdog / ensureMissingWatchdog,
+// in the same order, and never downloads, takes a lock, or writes or resets
+// the state file. Deliberate differences from the first evaluation:
+//   - A registered watchdog always seeds nothing, even with an open record and
+//     the service not running: right after a reboot that races the watchdog's
+//     own startup, and the API signals watchdogUpgradeTo only for an older or
+//     empty installed version, so nothing later would clear the banner. The
+//     first evaluation still handles an interrupted install. This also keeps
+//     process exec off the startup path.
+//   - A missing, corrupt or unreadable record seeds nothing; the first
+//     evaluation persists the corrupt record's fail-closed form and reports it.
+//   - The record is reported as persisted even when its budget belongs to an
+//     older agent version, which the first evaluation will re-arm: it is the
+//     last known outcome until a new attempt replaces it.
+func (h *Heartbeat) seedWatchdogInstallReport() {
+	e := h.watchdogEnsure
+	if e == nil {
+		return
+	}
+	rec, corrupt, err := e.store.Load()
+	if err != nil {
+		log.Warn("watchdog install state unavailable; not seeding the startup report", "error", err.Error())
+	}
+	open := err == nil && !corrupt && rec.Attempts > 0
+	switch e.detect() {
+	case watchdoginstall.StatusMissing:
+	case watchdoginstall.StatusRegistered:
+		return
+	case watchdoginstall.StatusUnsupported:
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallUnsupported})
+		return
+	default: // unknown
+		return
+	}
+	if isDevAgentVersion(h.agentVersion) {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallGaveUp, LastErrorClass: string(watchdoginstall.ClassDevBuild)})
+		return
+	}
+	if e.optedOut() {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallOptedOut})
+		return
+	}
+	if !h.autoUpdate() {
+		e.setReport(&WatchdogInstallReport{State: watchdogInstallDisabledByPolicy})
+		return
+	}
+	if open {
+		e.setReportFromRecord(rec)
+	}
 }
 
 // watchdogInstallReport returns a copy of the current report, or nil when there
