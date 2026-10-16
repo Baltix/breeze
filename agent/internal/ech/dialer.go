@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -343,8 +344,7 @@ func (a *attempt) plainInitial(ctx context.Context, mode Mode) (net.Conn, error)
 	}
 	if _, _, ok := a.d.opts.Cache.Get(a.host); !ok {
 		if ferr := a.d.fetchSync(ctx, a.host); ferr != nil {
-			log.Debug("ech one-shot config fetch failed", "host", a.host, "error", ferr.Error())
-			return nil, err
+			return nil, a.oneShotFailed(err, fmt.Sprintf("config fetch failed: %v", ferr))
 		}
 	}
 	etc, tcpFailed, eerr := a.ech(ctx)
@@ -352,12 +352,25 @@ func (a *attempt) plainInitial(ctx context.Context, mode Mode) (net.Conn, error)
 		return etc, nil
 	}
 	if tcpFailed {
-		return nil, err
+		return nil, a.oneShotFailed(err, fmt.Sprintf("ech connect failed: %v", eerr))
 	}
-	if ptc, perr := a.plainFallback(ctx); perr == nil {
+	ptc, perr := a.plainFallback(ctx)
+	if perr == nil {
 		return ptc, nil
 	}
-	return nil, err
+	return nil, a.oneShotFailed(err, fmt.Sprintf("ech attempt failed: %v; plain retry failed: %v", eerr, perr))
+}
+
+// oneShotFailed reports why a one-shot command's ECH fallback did not save
+// the dial. A one-shot command (enroll, bootstrap, support) exits on this
+// error, so the reason is warned (visible at the stock info level) and
+// appended to the original filter error, which stays the wrapped error so
+// errors.As still finds its *tls.RecordHeaderError (IsFilterSignature) and
+// any caller's *url.Error wrapping is unchanged.
+func (a *attempt) oneShotFailed(filterErr error, reason string) error {
+	log.Warn("encrypted client hello fallback failed; a network security filter is intercepting this host",
+		"host", a.host, "reason", reason)
+	return fmt.Errorf("%w (encrypted client hello fallback: %s)", filterErr, reason)
 }
 
 // plainFallback is the single plain attempt after ECH could not be used. It
@@ -384,7 +397,7 @@ func (a *attempt) plainFallback(ctx context.Context) (net.Conn, error) {
 func (a *attempt) ech(ctx context.Context) (tc *tls.Conn, tcpFailed bool, err error) {
 	d := a.d
 	list, fresh, ok := d.opts.Cache.Get(a.host)
-	if !ok {
+	if !ok || len(list) == 0 {
 		d.fetchAsync(a.host)
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "error", errNoCachedConfig.Error())
 		return nil, false, errNoCachedConfig
@@ -402,6 +415,13 @@ func (a *attempt) echWith(ctx context.Context, list []byte, allowRetry bool) (*t
 	cfg.EncryptedClientHelloConfigList = list
 	tc, tcpFailed, err := a.handshake(ctx, cfg, a.echBudget)
 	if err == nil {
+		if !tc.ConnectionState().ECHAccepted {
+			// The handshake succeeded without ECH (crypto/tls offers none for
+			// an empty list, and a server may also just not accept it without
+			// rejecting). ECHActive is wire truth, so this is a plain success.
+			a.notePlainSuccess("ech-not-offered")
+			return tc, false, nil
+		}
 		now := d.opts.Now()
 		d.update(a.host, func(st *hostState) bool { st.NoteECHAcceptedAt(now); return false })
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "result", "accepted")
@@ -425,14 +445,32 @@ func (a *attempt) echWith(ctx context.Context, list []byte, allowRetry bool) (*t
 	// Only a caller cancellation is exempt; an expired handshake budget
 	// (ours or the caller's deadline) counts against ECH.
 	if !errors.Is(ctx.Err(), context.Canceled) {
-		a.noteECHFailure()
+		d.noteECHFailure(a.host, fmt.Errorf("ECH handshake failed: %w", err))
 	}
 	return nil, false, err
 }
 
-func (a *attempt) noteECHFailure() {
-	now := a.d.opts.Now()
-	a.d.update(a.host, func(st *hostState) bool { st.NoteECHFailure(now); return false })
+// noteECHFailure counts one ECH failure for host and, on the transition into
+// cooldown, warns once with cause, the last failure. Without this the cause
+// is only in Debug lines, which a stock (info-level) agent never writes.
+func (d *Dialer) noteECHFailure(host string, cause error) {
+	now := d.opts.Now()
+	var cooled bool
+	d.update(host, func(st *hostState) bool { cooled = st.NoteECHFailure(now); return false })
+	if cooled {
+		log.Warn("encrypted client hello paused for one hour after repeated failures; dialing plain",
+			"host", host, "last_error", cause.Error())
+	}
+}
+
+// fetchFailure describes a failed config fetch for the cooldown warning: a
+// host that publishes no ECH config (a self-hosted edge without an ech=
+// record) reads differently from DoH being unreachable.
+func fetchFailure(err error) error {
+	if errors.Is(err, ErrNoECHConfig) {
+		return fmt.Errorf("ECH config fetch: %w", err)
+	}
+	return fmt.Errorf("ECH config DNS-over-HTTPS lookup failed: %w", err)
 }
 
 // noteSignature records a filter signature. Engagement only happens while
@@ -496,8 +534,7 @@ func (d *Dialer) fetchAsync(host string) {
 		if err != nil {
 			log.Debug("ech config fetch failed", "host", host, "error", err.Error())
 			if _, _, cached := d.opts.Cache.Get(host); !cached {
-				now := d.opts.Now()
-				d.update(host, func(st *hostState) bool { st.NoteECHFailure(now); return false })
+				d.noteECHFailure(host, fetchFailure(err))
 			}
 			return
 		}

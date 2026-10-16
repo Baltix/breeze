@@ -2,6 +2,8 @@ package ech
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -43,13 +45,23 @@ func NewCache(path string) *Cache {
 	return c
 }
 
+// load reads the cache file. A missing file is the normal first boot and is
+// silent; an unreadable or corrupt one is warned about once (NewCache calls
+// load once) and the cache starts empty. Config bytes are never logged.
 func (c *Cache) load() {
 	data, err := os.ReadFile(c.path)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Warn("ECH config cache unreadable; starting empty", "path", c.path, "error", err.Error())
+		}
 		return
 	}
 	var entries map[string]cacheEntry
-	if json.Unmarshal(data, &entries) == nil && entries != nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Warn("ECH config cache corrupt; starting empty", "path", c.path, "error", err.Error())
+		return
+	}
+	if entries != nil {
 		c.entries = entries
 	}
 }
@@ -60,7 +72,9 @@ func (c *Cache) Get(host string) (configList []byte, fresh bool, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, found := c.entries[host]
-	if !found {
+	if !found || len(e.ConfigList) == 0 {
+		// An empty list (hand-edited file, older build) is not a usable
+		// config: crypto/tls would silently run a plain handshake with it.
 		return nil, false, false
 	}
 	expiry := e.FetchedAt.Add(time.Duration(e.TTLSeconds) * time.Second)
@@ -69,6 +83,9 @@ func (c *Cache) Get(host string) (configList []byte, fresh bool, ok bool) {
 
 // Put stores cfg for host and persists best-effort.
 func (c *Cache) Put(host string, cfg ECHConfig) {
+	if len(cfg.ConfigList) == 0 {
+		return
+	}
 	c.mu.Lock()
 	c.entries[host] = cacheEntry{
 		ConfigList: append([]byte(nil), cfg.ConfigList...),
