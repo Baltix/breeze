@@ -402,7 +402,15 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
       <div role="tabpanel" id={overflowPanelId(effectiveTab)} aria-labelledby={overflowTabId(effectiveTab)} tabIndex={-1}>
       {effectiveTab === 'overview' && (
-        <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} archived={archived} />
+        <OrgOverviewTab
+          orgId={orgId}
+          orgFetch={orgFetch}
+          summary={summary}
+          summaryFailed={summaryFailed}
+          mode={mode}
+          tabs={tabs}
+          archived={archived}
+        />
       )}
       {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
