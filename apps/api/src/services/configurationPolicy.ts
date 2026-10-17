@@ -2004,9 +2004,11 @@ async function assertNewPatchLinkAppRulesOnRing(
  *  - The request re-sends a non-empty `apps` list. Only a client loaded before
  *    the cutover does that (it sends the list it loaded alongside the ring it
  *    loaded), so it would relink a migrated policy to its old ring, or to none.
- *  - The link has legacy inline rules that no ring carries yet: its current
- *    reference does not resolve to a valid ring (the backfill skips those), so
- *    the target ring has to enforce exactly those rules.
+ *  - The link has legacy inline rules that no ring enforces: its current
+ *    reference does not resolve to a valid ring (missing, not a ring, or
+ *    another partner's — the backfill skips those — or a deleted ring, which
+ *    enforces nothing any more, #8678), so the target ring has to enforce
+ *    exactly those rules (RING_LACKS_POLICY_APP_RULES).
  * Moving from a valid ring to another needs nothing: the ring owns the rules.
  */
 async function assertPatchRingChangeKeepsAppRules(
@@ -2025,7 +2027,8 @@ async function assertPatchRingChangeKeepsAppRules(
   if (current.valid && current.ringId) return;
   const target = await resolvePatchPolicyReference(partnerId, targetRef);
   if (!target.valid || !target.ringId || !sameAppRuleSet(enforcedAppRuleSet(target.appRules), legacy)) {
-    throw new PolicyApprovalFieldMovedError();
+    // The repair flow, not a stale client: say what the chosen ring is missing (#8678).
+    throw new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES');
   }
 }
 
@@ -3249,7 +3252,7 @@ export async function validateFeaturePolicyExists(
     // owner above, so escaping RLS here cannot reach another partner's rings.
     const [ring] = await readWithPartnerAxisVisibility(() =>
       db
-        .select({ id: patchPolicies.id })
+        .select({ id: patchPolicies.id, enabled: patchPolicies.enabled })
         .from(patchPolicies)
         .where(
           and(
@@ -3263,6 +3266,12 @@ export async function validateFeaturePolicyExists(
 
     if (!ring) {
       return { valid: false, error: `Update ring "${featurePolicyId}" not found for this partner` };
+    }
+    // #8678: DELETE /update-rings/:id is a soft delete. The resolver treats a
+    // disabled ring as an invalid reference (patching held), so linking one
+    // would create a policy that is broken on arrival.
+    if (ring.enabled !== true) {
+      return { valid: false, error: `Update ring "${featurePolicyId}" has been deleted or disabled` };
     }
 
     return { valid: true };
