@@ -1359,7 +1359,13 @@
       "installAttempts": "{{count}} attempt(s)",
       "installLastAttempt": "Last install attempt: ",
       "managedByConfigPolicy": "Managed by configuration policy",
-      "managedByConfigPolicyHint": "This policy is generated from a configuration policy and is read-only here. Change it in Configuration Policies."
+      "managedByConfigPolicyHint": "This policy is generated from a configuration policy and is read-only here. Change it in Configuration Policies.",
+      "securityAgentCoverage": "Security agent coverage",
+      "coverageDevice": "Device",
+      "coverageVendor": "Vendor",
+      "coverageReason": "Reason",
+      "vendorOnlyAgent": "Vendor-only agent",
+      "coverageRowsNote": "Showing {{shown}} of {{total}}"
     },
     "deploymentList": {
       "running": "Running",
