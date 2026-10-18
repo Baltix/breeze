@@ -36,7 +36,7 @@ import type {
   FilterConditionGroup,
   HardwareHealth,
 } from "@breeze/shared";
-import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck, isDeviceLogSilent } from "@breeze/shared";
+import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
@@ -213,8 +213,6 @@ export type Device = {
   updateAttemptTargetVersion?: string | null;
   updateAttemptStartedAt?: string | null;
   updateAttemptLastAt?: string | null;
-  /** Latest agent-logs ingest time (#7067); drives the logs-silent badge. */
-  lastLogAt?: string | null;
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
@@ -1925,7 +1923,7 @@ export default function DeviceList({
         // #8407: primary status + at most ONE secondary pill (most severe
         // first); the rest fold into a "+N" chip whose popover keeps every
         // per-condition testid reachable. Order: update stuck > agent silent >
-        // logs silent > collision > Assist install issue > updates withheld.
+        // collision > Assist install issue > updates withheld.
         // Rule for new conditions: a list pill is only for something a tech
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
@@ -1962,28 +1960,6 @@ export default function DeviceList({
               >
                 {t("deviceList.agentSilent")}{" "}
                 {formatSilentDuration(device.mainAgentSilentSince!)}
-              </span>
-            ),
-          });
-        }
-        // #7067: a heartbeating device that has shipped no logs for over 6h —
-        // distinct from agent-silent (dead main agent with a live watchdog).
-        if (
-          isDeviceLogSilent({
-            status: device.status,
-            lastLogAt: device.lastLogAt,
-            enrolledAt: device.enrolledAt,
-          })
-        ) {
-          secondary.push({
-            key: "logs-silent",
-            node: (
-              <span
-                data-testid={`device-${device.id}-logs-silent-badge`}
-                title={t("deviceList.logsSilentTooltip")}
-                className={pillClass}
-              >
-                {t("deviceList.logsSilent")}
               </span>
             ),
           });
@@ -2035,7 +2011,6 @@ export default function DeviceList({
         const secondaryLabels: Record<string, string> = {
           stuck: t("deviceList.updateStuck"),
           "agent-silent": t("deviceList.agentSilent"),
-          "logs-silent": t("deviceList.logsSilent"),
           duplicate: t("deviceList.possibleDuplicate"),
           helper: t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),

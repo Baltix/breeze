@@ -1362,8 +1362,8 @@ coreRoutes.get(
         logShippingState: devices.logShippingState,
         logShippingFailureStartedAt: devices.logShippingFailureStartedAt,
         logShippingLastError: devices.logShippingLastError,
-        // #7067 — latest agent-logs ingest time; drives the "logs silent"
-        // list badge.
+        // #7067 — latest agent-logs ingest time. Informational only: agents
+        // ship warn+ by default, so recency alone is not a health signal.
         lastLogAt: devices.lastLogAt
       })
       .from(devices)

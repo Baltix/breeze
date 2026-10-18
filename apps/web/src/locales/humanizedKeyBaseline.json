@@ -1548,7 +1548,6 @@
   "devices.deviceList.expectedOffline",
   "devices.deviceList.filterByDeviceClass",
   "devices.deviceList.lastSeen",
-  "devices.deviceList.logsSilent",
   "devices.deviceList.manualAsset",
   "devices.deviceList.moveDown",
   "devices.deviceList.moveUp",
