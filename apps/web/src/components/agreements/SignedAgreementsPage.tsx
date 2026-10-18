@@ -262,7 +262,9 @@ export default function SignedAgreementsPage({
                     {/* The no-quote variant exists because quoteId/quoteNumber are
                         left-joined and genuinely null for a deleted quote. */}
                     <div className="text-xs text-muted-foreground" data-testid="signed-agreement-subtitle">
-                      {doc.quoteNumber
+                      {doc.evidenceAvailable === false
+                        ? t('agreements.signedPage.evidenceUnavailable')
+                        : doc.quoteNumber
                         ? t('agreements.signedPage.rowSubtitle', {
                             quoteNumber: doc.quoteNumber,
                             signer: doc.signerName ?? '—',
@@ -277,7 +279,11 @@ export default function SignedAgreementsPage({
                   {!lockedOrgId && (
                     <td className="px-3 py-2 text-muted-foreground">{orgNames[doc.orgId] ?? '—'}</td>
                   )}
-                  <td className="px-3 py-2">{doc.signerName ?? '—'}</td>
+                  {/* Evidence snapshot (#8865 W1b): NULL only on a legacy quote row
+                      whose acceptance was deleted before the back-fill. */}
+                  <td className="px-3 py-2" data-testid="signed-agreement-signer">
+                    {doc.signerName ?? t('agreements.signedPage.evidenceUnavailable')}
+                  </td>
                   <td className="px-3 py-2">{doc.signedAt ? formatDate(doc.signedAt) : '—'}</td>
                   <td className="px-3 py-2">
                     {doc.quoteId ? (
