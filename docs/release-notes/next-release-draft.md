@@ -32,6 +32,13 @@ Last release: **v0.123.0** (2026-10-17).
 
 - **Breeze AI: System Restore ledger read (#8584).** The read-only `list_device_restore_point_attempts` chat tool (devices:read) lists a device's System Protection checkpoint attempts, newest first, with trigger and status filters. No new env vars or migrations.
 
+### Caller verification is now enforced for Microsoft 365 identity actions
+
+Password resets and account disables require fresh, single-use verification for the pinned Entra account, using the link tier: SMS and email links, callback attestation, and administrative disable. Verification is checked at release and immediately before direct Graph, Graph executor or Delegant dispatch. Administrative disable uses an interactive MFA step-up bound to the target and reason. "This is not me" opens an incident and fences undispatched actions.
+
+Workstation verification is not part of this release: it ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED` (default `false`), and policies cannot require tier 3 until it is enabled. Establish Entra bindings and attest imported contact destinations. Existing unpinned intents must be recreated. Roll the OID-capable Graph actions executor before the API. `CALLER_VERIFICATION_ENABLED` now defaults to `true`; set and map it in the API service environment. Explicit false hides the workflow and refuses protected actions. A failed dispatch does not restore a consumed verification.
+
 ## Migrations
 
 - `2026-12-30-200000-ai-model-registry-legacy-drop.sql` (#9130) — archive + drop of legacy AI model storage; irreversible without PITR on hosted (see Self-Hosting note).
+- `2026-12-30-220000-action-intents-caller-target.sql` — adds `target_entra_tenant_id`, `target_entra_oid`, `target_connection_ref` (immutable after insert, all-or-none) and `dispatch_started_at` to `action_intents`. DDL only; no backfill.
