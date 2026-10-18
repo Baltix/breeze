@@ -58,12 +58,14 @@ import {
   EVIDENCE_HOLD_RELEASED_ACTION,
   EVIDENCE_HOLD_RETAINED_TABLES,
   EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
+  EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS,
   deleteEvidenceHold,
   findEvidenceHold,
   listHeldLineage,
   listHoldsBySurvivor,
 } from './orgEvidenceHold';
 import { removeScreenshotFiles } from './screenshotFiles';
+import { ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS } from './orgSettingsInternalKeys';
 import { removePatchReportFiles } from './patchReportFiles';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from './authLifecycle';
 import {
@@ -1551,6 +1553,20 @@ export interface CascadeStats {
    * deletes a parent the shell owns (users, approval requests, ...). A real
    * Phase B repoints those parents to the survivor, so a held shell normally
    * owns none; if one does, the pointer is nulled like any erased reference.
+   *
+   * One retained reference is NO ACTION instead: `elevation_requests.site_id`
+   * -> `sites` (event-time site, spec OD11). A held request whose site still
+   * belongs to the shell would make the `sites` delete raise 23503 and fail
+   * the scoped erasure (fail-fast, re-runnable, nothing retained is lost).
+   * Phase B repoints every loser site to the survivor (`sites` is a plain
+   * repoint), so in a real merge the held request's site is a survivor site
+   * and the walk never deletes it; a site a shell still owns means the merge
+   * walk did not complete.
+   *
+   * The kept `organizations` row is scrubbed in the same run: billing contact
+   * and address, tax id and SSO configuration are nulled
+   * (EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS) and `settings` is cut down to the
+   * engine-owned lifecycle keys; name and slug stay.
    */
   evidenceHoldScoped?: true;
 }
@@ -1897,6 +1913,12 @@ async function cascadeDeleteOrgInternal(
   const scopedDetails = scopedHold
     ? {
       evidenceHoldScoped: true,
+      // W6 (#8208): the run erased everything but the retained evidence and
+      // the identity columns of the organizations row; an auditor filtering
+      // tenant.erasure.completed must be able to tell it from a full erasure.
+      scoped_hold: true,
+      scrubbedOrganizationColumns: [...EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS],
+      settingsReducedToEngineKeys: true,
       retainedTables: [...retainedTables],
       survivorOrgId: scopedHold.survivorOrgId,
       mergeEventId: scopedHold.mergeEventId,
@@ -2368,12 +2390,30 @@ async function cascadeDeleteOrgInternal(
   // sweeper's merge-erasure retry stops handing the shell back to erasure.
   // Stamped only after the walk succeeded — a failed walk leaves no stamp and
   // the retry re-runs it (the walk is idempotent).
+  //
+  // The same statement erases what the kept `organizations` row still holds
+  // beyond what the lineage needs (PAM ownership epochs W6, #8208): billing
+  // contact, billing address, tax id, the SSO configuration (it can carry
+  // client secrets), and every tenant key of `settings` — that blob holds
+  // sealed credentials (log-forwarding / event-log API keys, launcher
+  // passwords, webhooks; settingsSecretMasking.ts). Only the engine-owned
+  // lifecycle keys (ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS) survive, plus this
+  // stamp. `name` and `slug` stay — survivors render held history under the
+  // shell's name. Re-running it is a no-op.
   if (scopedHold) {
     try {
+      const engineKeys = sql`ARRAY[${sql.join(ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS.map((k) => sql`${k}`), sql`, `)}]::text[]`;
       await dbModule.withSystemDbAccessContext(() => dbModule.db.execute(sql`
         UPDATE organizations
-           SET settings = COALESCE(settings, '{}'::jsonb)
-                 || jsonb_build_object(${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text, now())
+           SET settings = COALESCE(
+                 CASE WHEN jsonb_typeof(settings) = 'object' THEN
+                   (SELECT jsonb_object_agg(e.key, e.value)
+                      FROM jsonb_each(settings) AS e
+                     WHERE e.key = ANY(${engineKeys}))
+                 END,
+                 '{}'::jsonb)
+                 || jsonb_build_object(${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text, now()),
+               ${sql.join(EVIDENCE_HOLD_SCRUBBED_ORG_COLUMNS.map((c) => sql`${sql.identifier(c)} = NULL`), sql`, `)}
          WHERE id = ${orgId}::uuid`));
     } catch (err) {
       await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'organizations (evidence-hold stamp)', stats, err);
