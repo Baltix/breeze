@@ -1,7 +1,7 @@
 {
   "NOT_FOUND": "Introuvable",
   "ACCESS_DENIED": "Accès refusé",
-  "VALIDATION_FAILED": "Vérifiez les champs en surbrillance",
+  "VALIDATION_FAILED": "Corrigez les valeurs non valides et réessayez",
   "RATE_LIMITED": "Trop de requêtes : réessayez dans un instant",
   "CONFLICT": "Il y a un conflit avec l'état actuel",
   "LIMIT_REACHED": "Vous avez atteint la limite pour cette action",

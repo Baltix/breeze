@@ -1,7 +1,7 @@
 {
   "NOT_FOUND": "Non trovato",
   "ACCESS_DENIED": "Accesso negato",
-  "VALIDATION_FAILED": "Controlla i campi evidenziati",
+  "VALIDATION_FAILED": "Correggi i valori non validi e riprova",
   "RATE_LIMITED": "Troppe richieste: riprova tra poco",
   "CONFLICT": "C'è un conflitto con lo stato attuale",
   "LIMIT_REACHED": "Hai raggiunto il limite per questa azione",

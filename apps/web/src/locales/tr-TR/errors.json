@@ -1,7 +1,7 @@
 {
   "NOT_FOUND": "Bulunamadı",
   "ACCESS_DENIED": "Erişim reddedildi",
-  "VALIDATION_FAILED": "Vurgulanan alanları kontrol edin",
+  "VALIDATION_FAILED": "Geçersiz değerleri düzeltip yeniden deneyin",
   "RATE_LIMITED": "Çok fazla istek var, kısa süre sonra tekrar deneyin",
   "CONFLICT": "Mevcut durumla bir çakışma var",
   "LIMIT_REACHED": "Bu işlem için sınıra ulaştınız",
