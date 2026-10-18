@@ -8,13 +8,15 @@
       },
       "primaryContact": "Contatto principale",
       "noPrimaryContact": "Nessun contatto principale",
+      "addContactLink": "Aggiungi contatto",
       "billingAddress": "Indirizzo di fatturazione",
       "noBillingAddress": "Nessun indirizzo di fatturazione",
       "billingSettingsLink": "Aggiungi nelle impostazioni di fatturazione",
       "sites_one": "{{count}} sito",
       "sites_other": "{{count}} siti",
-      "scopeChip": "Workspace: {{orgName}}",
-      "scopeChipHint": "Il tuo workspace è impostato su un'altra organizzazione. Questa pagina mostra sempre {{orgName}}.",
+      "workingHere": "Stai lavorando qui",
+      "workingHereLabel": "Stai lavorando in {{orgName}}",
+      "scopeLine": "Stai lavorando in {{currentOrg}} · questa scheda è {{orgName}}",
       "created": "Cliente dal {{date}}"
     },
     "actions": {
@@ -47,6 +49,15 @@
     "devices": {
       "loadError": "Impossibile caricare i dispositivi di questa organizzazione.",
       "searchPlaceholder": "Cerca dispositivi",
+      "searchLabel": "Cerca dispositivi per nome host",
+      "statusFilterLabel": "Filtra per stato",
+      "siteFilterLabel": "Filtra per sito",
+      "noneEnrolled": "Ancora nessun dispositivo registrato in {{orgName}}",
+      "addDevice": "Aggiungi dispositivo",
+      "noMatches": "Nessun dispositivo corrisponde",
+      "clearFilters": "Cancella filtri",
+      "capNotice": "Vengono mostrati i primi {{limit}} dispositivi",
+      "openInDevices": "Apri in Dispositivi",
       "allStatuses": "Tutti gli stati",
       "allSites": "Tutti i siti",
       "status": {

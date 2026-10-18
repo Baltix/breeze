@@ -69,7 +69,7 @@ const TAB_ICONS: Record<OrgRecordTab, React.ReactNode> = {
  * Its org comes from the URL, never from the OrgSwitcher: every request goes
  * through `makeOrgFetch(orgId)`, so a tech reading a customer's record while
  * their workspace points at another customer sees this customer's data (and a
- * chip saying so), not a silent mix.
+ * line in the header saying so), not a silent mix.
  *
  * Three states are load-bearing and each has its own card rather than a generic
  * error, because they mean genuinely different things to the operator:
@@ -211,9 +211,37 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const org = state.kind === 'loaded' ? state.org : null;
   const archived = isArchiveLifecycleOrg(org);
 
+  // The partner's own billing country (#9024): the header leaves a matching
+  // country off the address. Asked for only when there is a country to drop
+  // and only by partner sessions (the route is partner-scope); any failure
+  // just leaves the country on — the address is still correct, only noisier.
+  const isPartnerScope = claims.status === 'resolved' && claims.claims.scope === 'partner';
+  const orgCountry = org?.billingAddressCountry?.trim() || null;
+  const [partnerCountry, setPartnerCountry] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isPartnerScope || !orgCountry) return;
+    let cancelled = false;
+    void orgFetch('/orgs/partners/me')
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`partner load failed: ${res.status}`);
+        const body = (await res.json()) as { billingAddressCountry?: unknown };
+        if (!cancelled) setPartnerCountry(typeof body?.billingAddressCountry === 'string' ? body.billingAddressCountry : null);
+      })
+      .catch((err) => console.warn('[OrganizationRecordPage] partner country unavailable; showing the full address', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [orgFetch, isPartnerScope, orgCountry]);
+
   const handleWorkHere = () => {
     if (!org) return;
-    void applyOrgSwitch(orgId, t('orgRecord.actions.workHereToast', { orgName: org.name }), '/');
+    // Switch and STAY (#9019): the record's own URL, tab hash included. Every
+    // read on this page is pinned to `orgId` (via `orgFetch`, or the tab's own
+    // `orgId` override), so nothing here needs a remount — the store update
+    // alone turns the button into the "Working here" state and drops the
+    // mismatch line.
+    const { pathname, search, hash } = window.location;
+    void applyOrgSwitch(orgId, t('orgRecord.actions.workHereToast', { orgName: org.name }), `${pathname}${search}${hash}`);
   };
 
   const handleRestore = async () => {
@@ -361,6 +389,8 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         summary={summary}
         archived={archived}
         mismatchedScopeOrgName={scopeOrgId && scopeOrgId !== orgId ? scopeOrgName : null}
+        workingHere={scopeOrgId === orgId}
+        partnerCountry={partnerCountry}
         onWorkHere={handleWorkHere}
         onOpenSettings={() => void navigateTo(`/settings/organizations/${orgId}`)}
         onArchive={archived ? undefined : () => setModal('archive')}
@@ -414,7 +444,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       )}
       {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
-      {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgName={loadedOrg.name} orgFetch={orgFetch} />}
       {effectiveTab === 'activity' && <OrgActivityTab orgId={orgId} />}
       {effectiveTab === 'tickets' && <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { Building2, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { Building2, Check, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/lib/permissions';
 import { ENABLE_ENDPOINT_MESSAGING } from '@/lib/featureFlags';
@@ -16,6 +16,10 @@ export interface OrgRecordHeaderProps {
   archived: boolean;
   /** Name of the org the OrgSwitcher points at, when that is NOT this record. */
   mismatchedScopeOrgName: string | null;
+  /** The OrgSwitcher already points at this record's org. */
+  workingHere?: boolean;
+  /** The partner's own billing country: the address leaves a matching country off. */
+  partnerCountry?: string | null;
   onWorkHere: () => void;
   onOpenSettings: () => void;
   /** Omitted (with `onMerge`) while the record is read-only. */
@@ -28,8 +32,9 @@ export interface OrgRecordHeaderProps {
 
 /**
  * Identity header for the organization record: who this customer is, what
- * state they are in, and the three things you do from here (work in their
- * context, open their settings, run a lifecycle action).
+ * state they are in, and what you do from here (work in their context —
+ * shown as a quiet "Working here" state once you already are — open their
+ * settings, message their devices, run a lifecycle action).
  *
  * The status pill is ALWAYS rendered here, unlike the organizations list where
  * it is exception-only: the list uses absence to mean "nothing to see", which
@@ -41,6 +46,8 @@ export default function OrgRecordHeader({
   summary,
   archived,
   mismatchedScopeOrgName,
+  workingHere = false,
+  partnerCountry = null,
   onWorkHere,
   onOpenSettings,
   onArchive,
@@ -54,6 +61,7 @@ export default function OrgRecordHeader({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const scopeLineId = useId();
 
   const closeMenu = useCallback((returnFocus: boolean) => {
     setMenuOpen(false);
@@ -120,7 +128,7 @@ export default function OrgRecordHeader({
     region: org.billingAddressRegion,
     postalCode: org.billingAddressPostalCode,
     country: org.billingAddressCountry,
-  });
+  }, { homeCountry: partnerCountry });
   const hasLifecycleActions = !archived && (onArchive || onMerge);
 
   return (
@@ -145,12 +153,24 @@ export default function OrgRecordHeader({
               {org.type && (
                 <span
                   data-testid="org-record-type"
-                  className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                  className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-foreground"
                 >
                   {org.type === 'internal' ? t('orgRecord.header.type.internal') : t('orgRecord.header.type.customer')}
                 </span>
               )}
             </div>
+
+            {mismatchedScopeOrgName && !workingHere && (
+              // #9019: the mismatch used to live in a 12px chip whose meaning was
+              // a `title` tooltip — out of reach for keyboard and touch users.
+              <p
+                id={scopeLineId}
+                data-testid="org-record-scope-chip"
+                className="mt-1 text-sm text-muted-foreground"
+              >
+                {t('orgRecord.header.scopeLine', { currentOrg: mismatchedScopeOrgName, orgName: org.name })}
+              </p>
+            )}
 
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
               {org.createdAt && <span>{t('orgRecord.header.created', { date: formatDate(org.createdAt) })}</span>}
@@ -184,7 +204,14 @@ export default function OrgRecordHeader({
               </div>
             ) : (
               summary && (
-                <p className="mt-1 text-sm text-muted-foreground">{t('orgRecord.header.noPrimaryContact')}</p>
+                // #9024: the same "missing · fix it" shape as the billing line below.
+                <p data-testid="org-record-no-primary-contact" className="mt-1 text-sm text-muted-foreground">
+                  {t('orgRecord.header.noPrimaryContact')}
+                  <span aria-hidden="true"> · </span>
+                  <a data-testid="org-record-primary-contact-link" href="#contacts" className="text-primary hover:underline">
+                    {t('orgRecord.header.addContactLink')}
+                  </a>
+                </p>
               )
             )}
 
@@ -197,12 +224,13 @@ export default function OrgRecordHeader({
                 <span>{billingAddress}</span>
               </div>
             ) : (
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p data-testid="org-record-no-billing-address" className="mt-1 text-sm text-muted-foreground">
                 {t('orgRecord.header.noBillingAddress')}
+                <span aria-hidden="true"> · </span>
                 <a
                   data-testid="org-record-billing-address-link"
                   href={`/settings/organizations/${org.id}#billing`}
-                  className="ml-2 text-primary hover:underline"
+                  className="text-primary hover:underline"
                 >
                   {t('orgRecord.header.billingSettingsLink')}
                 </a>
@@ -212,22 +240,36 @@ export default function OrgRecordHeader({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 md:justify-end">
-          {!archived && (
-            <button
-              type="button"
-              data-testid="org-record-work-here"
-              onClick={onWorkHere}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t('orgRecord.actions.workHere')}
-            </button>
-          )}
+          {!archived &&
+            (workingHere ? (
+              // #9019: a state, not an action — same slot as the button so
+              // the row doesn't jump when the switch lands.
+              <span
+                role="status"
+                data-testid="org-record-working-here"
+                aria-label={t('orgRecord.header.workingHereLabel', { orgName: org.name })}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground"
+              >
+                <Check className="h-4 w-4" aria-hidden="true" />
+                {t('orgRecord.header.workingHere')}
+              </span>
+            ) : (
+              <button
+                type="button"
+                data-testid="org-record-work-here"
+                onClick={onWorkHere}
+                aria-describedby={mismatchedScopeOrgName ? scopeLineId : undefined}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t('orgRecord.actions.workHere')}
+              </button>
+            ))}
           {!archived && onSendMessage && canSendMessage && (
             <button
               type="button"
               data-testid="org-record-send-message"
               onClick={onSendMessage}
-              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-accent"
             >
               {t('orgRecord.actions.sendMessage')}
             </button>
@@ -236,7 +278,7 @@ export default function OrgRecordHeader({
             type="button"
             data-testid="org-record-settings"
             onClick={onOpenSettings}
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-accent"
           >
             <Settings className="h-3.5 w-3.5" aria-hidden="true" />
             {t('orgRecord.actions.settings')}
@@ -255,7 +297,7 @@ export default function OrgRecordHeader({
                   if (e.key === 'ArrowDown' && !menuOpen) { e.preventDefault(); setMenuOpen(true); }
                   if (e.key === 'Escape' && menuOpen) { e.preventDefault(); closeMenu(true); }
                 }}
-                className="inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-sm font-medium hover:bg-accent"
+                className="inline-flex h-9 items-center gap-1 rounded-md border px-2 text-sm font-medium hover:bg-accent"
               >
                 <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
@@ -300,17 +342,6 @@ export default function OrgRecordHeader({
           )}
         </div>
       </div>
-
-      {mismatchedScopeOrgName && (
-        <p
-          data-testid="org-record-scope-chip"
-          className="inline-flex w-fit items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-xs text-muted-foreground"
-          title={t('orgRecord.header.scopeChipHint', { orgName: mismatchedScopeOrgName })}
-        >
-          <Building2 className="h-3 w-3" aria-hidden="true" />
-          {t('orgRecord.header.scopeChip', { orgName: mismatchedScopeOrgName })}
-        </p>
-      )}
     </div>
   );
 }
