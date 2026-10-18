@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
-import { List, Grid, Plus, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
+import { List, Grid, Plus, AlertCircle, ChevronDown, RefreshCw, Upload } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { usePermissions } from '@/lib/permissions';
@@ -32,6 +32,7 @@ import { DeviceClassSegment } from './DeviceClassSegment';
 import {
   filterDevicesByClass,
   countDevicesByClass,
+  readDeviceClassFromHash,
   type DeviceClassFilter,
 } from './deviceClassFilter';
 import { useDeviceClassFilter } from './useDeviceClassFilter';
@@ -54,6 +55,7 @@ import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
+import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, isCommandQueueable } from './bulkActionGating';
 import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
@@ -260,10 +262,13 @@ function AddAssetMenu({
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
+  // #9036: the empty-org state offers "Install agent" only to a role that can
+  // mint enrollment keys — the same UX gate as the Add menu item (#7217).
+  const { can } = usePermissions();
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  // Org scope is shown by the always-visible top-bar switcher (scope pill +
-  // org picker); the page header no longer repeats it. orgStoreOrgs is still
-  // used to name orgs in the run-script confirm dialog.
+  // Org scope is shown by the top-bar switcher and, since #9035, as a muted
+  // suffix in this page's heading (ContextScopeLine skips /devices). orgStoreOrgs
+  // is still used to name orgs in the run-script confirm dialog.
   const { organizations: orgStoreOrgs } = useOrgStore();
 
   // #4147 — the list fetch carries no orgId of its own: fetchWithAuth injects
@@ -563,10 +568,26 @@ export default function DevicesPage() {
   // The merged list narrowed by class only — what the table receives.
   // DeviceList applies the shared predicate itself (it owns paging), while the
   // grid below applies it here; both start from the same class-narrowed set.
-  // The segment only renders when the list carries a non-agent arm. When it is
-  // hidden, a remembered/deep-linked Network or Manual choice would empty the
-  // list with no control to undo it, so the class filter stands down.
-  const showDeviceClassSegment = ENABLE_NETWORK_DEVICES_IN_LIST || deviceClassCounts.manual > 0;
+  // The segment only renders when it has something to say (#9035): a manual
+  // row, or (network arm on) a network row, exists in the unfiltered list, or a
+  // deep link names a
+  // non-agent class (so the choice stays visible and undoable). An agent-only
+  // fleet gets no "Agent 3 / Network 0 / Manual 0" row. When it is hidden, a
+  // remembered Network or Manual choice would empty the list with no control
+  // to undo it, so the class filter stands down.
+  const unfilteredClassCounts = useMemo(() => countDevicesByClass(devices), [devices]);
+  const classPinnedByHash =
+    typeof window !== 'undefined' &&
+    (deviceClassFilter === 'manual' || (deviceClassFilter === 'network' && ENABLE_NETWORK_DEVICES_IN_LIST)) &&
+    // Read at render on purpose: the segment click writes the hash and sets
+    // state in the same step, so this never lags a user choice.
+    readDeviceClassFromHash(window.location.hash) === deviceClassFilter;
+  // An empty list has nothing to segment (#9036): no "All 0 / Agent 0" row.
+  const showDeviceClassSegment =
+    devices.length > 0 &&
+    ((ENABLE_NETWORK_DEVICES_IN_LIST && unfilteredClassCounts.network > 0) ||
+      unfilteredClassCounts.manual > 0 ||
+      classPinnedByHash);
   const effectiveDeviceClass: DeviceClassFilter = showDeviceClassSegment ? deviceClassFilter : 'all';
   const classFilteredDevices = useMemo(
     () => filterDevicesByClass(devices, effectiveDeviceClass),
@@ -1455,7 +1476,7 @@ export default function DevicesPage() {
         showToast({
           type: 'error',
           message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', {
-            succeeded: bulk.succeeded.length,
+            count: bulk.succeeded.length,
             verb,
             failed: failedNames.length,
             devices: summarizeFailedDevices(failedNames),
@@ -1574,7 +1595,7 @@ export default function DevicesPage() {
       if (eligibleDevices.length === 0) {
         showToast({
           type: 'error',
-          message: t('devicesPage.toasts.bulkAllDecommissioned', { total: selectedDevices.length }),
+          message: t('devicesPage.toasts.bulkAllDecommissioned', { count: selectedDevices.length }),
         });
         return;
       }
@@ -1738,7 +1759,7 @@ export default function DevicesPage() {
           } else if (mSucceeded === 0) {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceAllFailed', { count: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { succeeded: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { count: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           }
           await refreshDevices();
           break;
@@ -1768,7 +1789,7 @@ export default function DevicesPage() {
           } else if (result.succeeded.length === 0) {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }), ...failureDetail });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }), ...failureDetail });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { count: result.succeeded.length, failed: result.failed.length }), ...failureDetail });
           }
           // A SEPARATE toast, deliberately: the device row came back, but those
           // machines had already been handed the uninstall and may be gone.
@@ -1889,7 +1910,7 @@ export default function DevicesPage() {
             type: 'warning',
             message: purged === 0
               ? t('devicesPage.toasts.bulkPurgeNoneDeleted', { reasons })
-              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
+              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: purged, skipped: skipped.length, reasons }),
           });
         }
         await refreshDevices();
@@ -1929,7 +1950,7 @@ export default function DevicesPage() {
         const byCode: Record<string, number> = {};
         for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
         const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
-        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged: started.accepted, skipped: started.rejected.length, reasons }) });
+        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: started.accepted, skipped: started.rejected.length, reasons }) });
       }
       stopPurgePolling(); // drop anything from a previous run
       const token = purgePollTokenRef.current;
@@ -1973,7 +1994,7 @@ export default function DevicesPage() {
         showToast({
           type: 'error',
           message: t('devicesPage.toasts.bulkDecommissionFailed', {
-            succeeded: result.succeeded,
+            count: result.succeeded,
             failed: result.failed.length,
             devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
           }),
@@ -2072,6 +2093,62 @@ export default function DevicesPage() {
   // position — keeps it mounted across the refresh; only the second child
   // (skeleton / error / real content) swaps out underneath it. Covered by
   // DevicesPage.postCreateHandoff.test.tsx ("keeps the network-asset modal mounted...").
+  // #9035: the list/grid toggle lives in each view's header strip (the table's
+  // for list, the grid's own for grid) instead of the page header.
+  const viewToggle = (
+    <div className="flex rounded-md border">
+      <button
+        type="button"
+        onClick={() => setViewMode('list')}
+        aria-pressed={viewMode === 'list'}
+        className={`flex h-8 w-8 items-center justify-center rounded-l-md transition ${
+          viewMode === 'list' ? 'bg-muted' : 'hover:bg-muted/50'
+        }`}
+        title={t('devicesPage.listView')}
+        aria-label={t('devicesPage.listView')}
+      >
+        <List className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setViewMode('grid')}
+        aria-pressed={viewMode === 'grid'}
+        className={`flex h-8 w-8 items-center justify-center rounded-r-md transition ${
+          viewMode === 'grid' ? 'bg-muted' : 'hover:bg-muted/50'
+        }`}
+        title={t('devicesPage.gridView')}
+        aria-label={t('devicesPage.gridView')}
+      >
+        <Grid className="h-4 w-4" />
+      </button>
+    </div>
+  );
+  // #9036: one action for the no-match state — drop the advanced group and the
+  // list-local narrowing (search, VPN facet).
+  const handleClearFilters = () => {
+    setAdvancedFilter(null);
+    setListFilters(DEFAULT_LIST_FILTERS);
+  };
+  // Offer "Clear filters" only when it would change something: a list emptied
+  // by the hidden-removed rule alone has the count line's "show" hint instead.
+  const hasClearableFilters =
+    (advancedFilter?.conditions.length ?? 0) > 0 ||
+    listFilters.search.trim() !== '' ||
+    (listFilters.vpn ?? 'all') !== 'all';
+  // The unfiltered fetch is empty: nothing to filter, segment, count or page.
+  const listIsEmpty = devices.length === 0;
+  const emptyOrgScope = orgScope.status === 'resolved' && orgScope.scope === 'org' ? orgScope : null;
+  const headingScope =
+    orgScope.status !== 'resolved'
+      ? null
+      : orgScope.scope === 'all'
+        ? t('common:layout.org.allOrganizations')
+        : (orgScope.org?.name ?? null);
+  // Grid count-line denominator: the class-narrowed list minus hidden removed rows.
+  const gridTotal = includeDecommissioned
+    ? classFilteredDevices.length
+    : classFilteredDevices.filter(d => d.status !== 'decommissioned').length;
+
   const addNetworkAssetModal = (
     <AddNetworkAssetModal
       isOpen={showAddNetworkAsset}
@@ -2171,8 +2248,18 @@ export default function DevicesPage() {
       {addNetworkAssetModal}
       <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 data-testid="devices-heading" className="text-xl font-semibold tracking-tight">{t('devicesPage.title')}</h1>
+        <div className="min-w-0">
+          {/* #9035: the scope rides in the heading instead of a separate
+              layout line above the banner (ContextScopeLine skips /devices). */}
+          <h1 data-testid="devices-heading" className="text-xl font-semibold tracking-tight">
+            {t('devicesPage.title')}
+            {headingScope && (
+              <span data-testid="devices-heading-scope" className="font-normal text-muted-foreground">
+                {' · '}
+                {headingScope}
+              </span>
+            )}
+          </h1>
           <p className="text-muted-foreground">
             {t('devicesPage.subtitle')}
           </p>
@@ -2190,30 +2277,6 @@ export default function DevicesPage() {
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
-          <div className="flex rounded-md border">
-            <button
-              type="button"
-              onClick={() => setViewMode('list')}
-              className={`flex h-10 w-10 items-center justify-center rounded-l-md transition ${
-                viewMode === 'list' ? 'bg-muted' : 'hover:bg-muted/50'
-              }`}
-              title={t('devicesPage.listView')}
-              aria-label={t('devicesPage.listView')}
-            >
-              <List className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('grid')}
-              className={`flex h-10 w-10 items-center justify-center rounded-r-md transition ${
-                viewMode === 'grid' ? 'bg-muted' : 'hover:bg-muted/50'
-              }`}
-              title={t('devicesPage.gridView')}
-              aria-label={t('devicesPage.gridView')}
-            >
-              <Grid className="h-4 w-4" />
-            </button>
-          </div>
           <button
             type="button"
             data-testid="devices-page-import-rmm"
@@ -2221,9 +2284,14 @@ export default function DevicesPage() {
               window.location.hash = 'import-definitions';
               setShowRmmImport(true);
             }}
-            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+            title={t('devicesPage.importFromRmm')}
+            aria-label={t('devicesPage.importFromRmm')}
+            className="flex items-center gap-2 whitespace-nowrap rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted sm:px-4"
           >
-            {t('devicesPage.importFromRmm')}
+            {/* #9037: at phone width the full label wrapped to four lines. */}
+            <Upload className="h-4 w-4 sm:hidden" aria-hidden="true" />
+            <span className="sm:hidden">{t('devicesPage.importFromRmmShort')}</span>
+            <span className="hidden sm:inline">{t('devicesPage.importFromRmm')}</span>
           </button>
           <AddAssetMenu
             variant="primary"
@@ -2238,7 +2306,7 @@ export default function DevicesPage() {
         </div>
       </div>
 
-      {filtersV2 ? (
+      {listIsEmpty ? null : filtersV2 ? (
         <DeviceFilterToolbar
           value={advancedFilter}
           onChange={setAdvancedFilter}
@@ -2298,8 +2366,45 @@ export default function DevicesPage() {
         </div>
       )}
 
-      {devices.length === 0 ? (
-        <div className="rounded-lg border bg-card p-8">
+      {listIsEmpty && emptyOrgScope ? (
+        // (a) The working org has no devices at all (#9036). Naming the org
+        // keeps "Your fleet is empty" from contradicting the switcher.
+        <div data-testid="devices-empty-org" className="rounded-lg border bg-card p-8">
+          <div className="max-w-lg">
+            <h2 className="text-lg font-semibold text-foreground mb-2">
+              {emptyOrgScope.org?.name
+                ? t('devicesPage.emptyOrgTitle', { org: emptyOrgScope.org.name })
+                : t('devicesPage.emptyOrgTitleUnnamed')}
+            </h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              {t('devicesPage.emptyOrgDescription')}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {can('organizations', 'write') && (
+                <button
+                  type="button"
+                  data-testid="devices-empty-install-agent"
+                  onClick={() => setShowAddDevice(true)}
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t('devicesPage.addMenu.installAgent')}
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="devices-empty-view-all-orgs"
+                onClick={() => { void applyOrgSwitch(null, t('common:layout.org.toast.showingAll')); }}
+                className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
+              >
+                {t('devicesPage.viewAllOrganizations')}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : listIsEmpty ? (
+        // (b) The whole fleet is empty — first-run onboarding.
+        <div data-testid="devices-empty-fleet" className="rounded-lg border bg-card p-8">
           <div className="max-w-lg">
             <h2 className="text-lg font-semibold text-foreground mb-2">{t('devicesPage.emptyTitle')}</h2>
             <p className="text-sm text-muted-foreground mb-6">
@@ -2347,9 +2452,21 @@ export default function DevicesPage() {
           onAutoSelectConsumed={handleAutoSelectConsumed}
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
           effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
+          headerActions={viewToggle}
+          onClearFilters={hasClearableFilters ? handleClearFilters : undefined}
+          sortInHash
         />
       ) : (
         <div className="space-y-3">
+          <div
+            data-testid="device-grid-header-strip"
+            className="flex flex-wrap items-center justify-between gap-2"
+          >
+            <p className="text-sm text-muted-foreground">
+              {t('deviceList.countLine', { shown: gridDevices.length, count: gridTotal })}
+            </p>
+            {viewToggle}
+          </div>
           {/* Grid view has no filter toolbar to host DeviceList's inline
               pill, and the toast fired above is transient (auto-dismisses)
               and one-shot (only fires on the false→true transition) — a user
@@ -2384,6 +2501,25 @@ export default function DevicesPage() {
                 onHide={onHideDecommissioned}
               />
             </p>
+          )}
+          {gridDevices.length === 0 && !advancedFilterBlocked && (
+            // (c) Rows exist but the filters exclude every one (#9036).
+            <div
+              data-testid="device-grid-no-matches"
+              className="flex flex-col items-center gap-2 rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground"
+            >
+              <p className="font-medium text-foreground">{t('deviceList.noMatchesTitle')}</p>
+              {hasClearableFilters && (
+                <button
+                  type="button"
+                  data-testid="device-grid-clear-filters"
+                  onClick={handleClearFilters}
+                  className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
+                >
+                  {t('deviceFilters.clearFilters')}
+                </button>
+              )}
+            </div>
           )}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {gridDevices.map(device => (
@@ -2582,7 +2718,7 @@ export default function DevicesPage() {
           message={t('devicesPage.confirmDecommissionedSkip.message', {
             skipped: pendingDecommissionedSkip.skippedCount,
             total: pendingDecommissionedSkip.totalCount,
-            eligible: pendingDecommissionedSkip.devices.length,
+            count: pendingDecommissionedSkip.devices.length,
           })}
         />
       )}
