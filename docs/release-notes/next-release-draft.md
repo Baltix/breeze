@@ -30,6 +30,8 @@ Last release: **v0.123.0** (2026-10-17).
 
 ## Features / API
 
+- **Breeze AI: System Restore ledger read (#8584).** The read-only `list_device_restore_point_attempts` chat tool (devices:read) lists a device's System Protection checkpoint attempts, newest first, with trigger and status filters. No new env vars or migrations.
+
 ## Migrations
 
 - `2026-12-30-200000-ai-model-registry-legacy-drop.sql` (#9130) — archive + drop of legacy AI model storage; irreversible without PITR on hosted (see Self-Hosting note).
