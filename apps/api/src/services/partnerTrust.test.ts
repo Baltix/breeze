@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { audit, publish, state, tryAutoPromote, dbUpdateChain } = vi.hoisted(() => {
+const { audit, publish, state, tryAutoPromote, dbUpdateChain, sendTrustApprovedEmail } = vi.hoisted(() => {
   const chain = {
     set: vi.fn(() => chain),
     where: vi.fn(() => chain),
@@ -19,7 +19,18 @@ const { audit, publish, state, tryAutoPromote, dbUpdateChain } = vi.hoisted(() =
     },
     tryAutoPromote: vi.fn(async () => false),
     dbUpdateChain: chain,
+    sendTrustApprovedEmail: vi.fn(async () => 1),
   };
+});
+
+const afterExit = vi.hoisted(() => {
+  const deferred: Array<{ label: string; work: () => unknown }> = [];
+  const state = { hold: false };
+  const register = vi.fn((label: string, work: () => unknown) => {
+    if (state.hold) deferred.push({ label, work });
+    else void work();
+  });
+  return { deferred, state, register };
 });
 
 vi.mock('./auditService', () => ({ createAuditLog: audit }));
@@ -32,6 +43,7 @@ vi.mock('../db', () => ({
   db: { update: vi.fn(() => dbUpdateChain) },
   withSystemDbAccessContext: async (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
+  runAfterDbContextExit: afterExit.register,
 }));
 vi.mock('./partnerTrust.repo', () => ({
   readTrust: vi.fn(async () => state),
@@ -39,6 +51,7 @@ vi.mock('./partnerTrust.repo', () => ({
   partnerForDevice: vi.fn(async () => 'p1'),
 }));
 vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
+vi.mock('./partnerTrustPartnerMail', () => ({ sendTrustApprovedEmail }));
 vi.mock('./trustPage/servingSet', () => ({ scheduleServingRefreshForPartner: vi.fn() }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
@@ -178,6 +191,7 @@ beforeEach(() => {
   vi.mocked(scheduleServingRefreshForPartner).mockClear();
   publish.mockClear();
   tryAutoPromote.mockClear();
+  sendTrustApprovedEmail.mockClear();
   vi.mocked(writeTrust).mockClear();
   vi.mocked(writeTrust).mockResolvedValue(1);
   dbUpdateChain.set.mockClear();
@@ -247,6 +261,76 @@ describe('trust_page_publish capability', () => {
       .toEqual({ allow: false, code: 'TRUST_RESTRICTED', capability: 'trust_page_publish', reason: 'restricted' });
     expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'trusted', probationEnrollments: 0 }))
       .toEqual({ allow: true });
+  });
+
+  it('emails the partner once on probation → trusted, after the audit row', async () => {
+    state.trustState = 'probation';
+
+    await setTrustState('p1', 'trusted', 'admin:promote', 'user-1');
+
+    expect(sendTrustApprovedEmail).toHaveBeenCalledTimes(1);
+    expect(sendTrustApprovedEmail).toHaveBeenCalledWith({ partnerId: 'p1' });
+    expect(audit.mock.invocationCallOrder[0]).toBeLessThan(sendTrustApprovedEmail.mock.invocationCallOrder[0]!);
+  });
+
+  it('sends the approval email via runAfterDbContextExit, not inline', async () => {
+    state.trustState = 'probation';
+    afterExit.state.hold = true;
+    try {
+      await setTrustState('p1', 'trusted', 'admin:promote', 'user-1');
+
+      expect(sendTrustApprovedEmail).not.toHaveBeenCalled();
+      expect(afterExit.deferred.map((d) => d.label)).toEqual(['partnerTrust.approvedEmail']);
+      await afterExit.deferred[0]!.work();
+      expect(sendTrustApprovedEmail).toHaveBeenCalledWith({ partnerId: 'p1' });
+    } finally {
+      afterExit.state.hold = false;
+      afterExit.deferred.length = 0;
+    }
+  });
+
+  it('emails the partner on the auto-promotion CAS path too', async () => {
+    state.trustState = 'probation';
+
+    await setTrustState('p1', 'trusted', 'auto:settled_card_24h', null, {}, { expectedFrom: 'probation' });
+
+    expect(sendTrustApprovedEmail).toHaveBeenCalledWith({ partnerId: 'p1' });
+  });
+
+  it('does not email when the CAS loses', async () => {
+    state.trustState = 'probation';
+    vi.mocked(writeTrust).mockResolvedValueOnce(0);
+
+    await setTrustState('p1', 'trusted', 'auto:settled_card_24h', null, {}, { expectedFrom: 'probation' });
+
+    expect(sendTrustApprovedEmail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['restricted', 'trusted'],
+    ['trusted', 'trusted'],
+    ['probation', 'restricted'],
+    ['probation', 'probation'],
+    ['trusted', 'probation'],
+  ] as const)('does not email on %s → %s', async (from, to) => {
+    state.trustState = from;
+
+    const result = await setTrustState('p1', to, 'admin:change', 'user-1');
+
+    expect(result).toBe(true);
+    expect(sendTrustApprovedEmail).not.toHaveBeenCalled();
+  });
+
+  it('still resolves true and keeps the audit row when the send rejects', async () => {
+    state.trustState = 'probation';
+    sendTrustApprovedEmail.mockRejectedValueOnce(new Error('smtp down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(setTrustState('p1', 'trusted', 'admin:promote', 'user-1')).resolves.toBe(true);
+
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[partnerTrust]'), expect.anything());
+    warn.mockRestore();
   });
 });
 

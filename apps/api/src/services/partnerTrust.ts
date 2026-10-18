@@ -1,10 +1,12 @@
 import type { MiddlewareHandler } from 'hono';
 import { partnerTrustMode, type PartnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
+import { runAfterDbContextExit } from '../db';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
 import { partnerForDevice, partnerForOrg, readTrust, writeTrust } from './partnerTrust.repo';
 import { getRedis } from './redis';
+import { sendTrustApprovedEmail } from './partnerTrustPartnerMail';
 import { tryAutoPromote } from './partnerTrustPromotion';
 
 export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll' | 'custom_sending_domain' | 'trust_page_publish';
@@ -477,5 +479,22 @@ export async function setTrustState(
     result: 'success',
     details: { from: before?.trustState ?? null, to: next, reason, ...evidence },
   });
+  // Partner-facing approval notice (#8713): only the probation → trusted
+  // transition, keyed off the same `before` the audit row used so the two
+  // never disagree. Every promotion path (auto CAS, admin route, evidence-card
+  // link) lands here. Deferred to context EXIT, not commit: `writeTrust`
+  // already committed on its own connection, so there is nothing left to
+  // roll back — the send just must not run on a request's open connection.
+  // The sender is inert outside `enforce` mode and never throws; the catch
+  // keeps the trust write's contract independent of that.
+  if (before?.trustState === 'probation' && next === 'trusted') {
+    runAfterDbContextExit('partnerTrust.approvedEmail', async () => {
+      try {
+        await sendTrustApprovedEmail({ partnerId });
+      } catch (error) {
+        console.warn('[partnerTrust] Failed to send approval email:', error);
+      }
+    });
+  }
   return true;
 }
