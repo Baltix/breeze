@@ -8,4 +8,10 @@ describe('WebhookList status filter select accessible name (#7156)', () => {
     render(<WebhookList webhooks={[]} />);
     expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
   });
+
+  it('drops its own title when the host already names the panel', () => {
+    render(<WebhookList webhooks={[]} showTitle={false} />);
+    expect(screen.queryByRole('heading', { name: 'Webhooks' })).toBeNull();
+    expect(screen.getByText(/0 of 0/)).toBeTruthy();
+  });
 });
