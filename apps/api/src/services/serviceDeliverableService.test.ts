@@ -867,6 +867,41 @@ describe('serviceDeliverableService', () => {
       expect(view.evidence).toHaveLength(1);
     });
 
+    it.each(['resolved', 'closed'])('on a missed occurrence whose ticket is %s completes the delivery (#9310)', async (ticketStatus) => {
+      queueResult([occ({ status: 'missed', ticketId: 't1' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: ticketStatus }]); // ticket status lookup
+      queueResult([{ id: 'o1' }]); // update returning
+      queueResult([occ({ status: 'delivered', deliveredVia: 'ticket' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket', deliveredByUserId: 'u1' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'missed']));
+    });
+
+    it('on a missed explicit-mode occurrence never completes from a resolved ticket (#9310)', async () => {
+      queueResult([occ({ status: 'missed', ticketId: 't1', completionMode: 'explicit' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: 'resolved' }]); // would be the ticket lookup if (wrongly) issued
+      queueResult([occ({ status: 'missed', ticketId: 't1', completionMode: 'explicit' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('on a missed occurrence whose ticket is still open changes nothing (#9310)', async () => {
+      queueResult([occ({ status: 'missed', ticketId: 't1' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: 'open' }]); // ticket status lookup
+      queueResult([occ({ status: 'missed', ticketId: 't1' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
     it('409s when the awaiting_evidence → delivered UPDATE matches zero rows', async () => {
       queueResult([occ({ status: 'awaiting_evidence' })]);
       queueResult([{ id: RUN_ID, reportId: 'r1' }]);
@@ -1110,6 +1145,36 @@ describe('serviceDeliverableService', () => {
       expect(patch.deliveredAt).toBeUndefined();
       expect(patch.deliveredByUserId).toBeUndefined();
       expect(patch.deliveredVia).toBeUndefined();
+    });
+
+    it('posts exactly one internal, non-public system comment when resolution lands in awaiting_evidence (#9310)', async () => {
+      queueResult([occRow()]); queueResult([]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(chain.values.mock.calls).toHaveLength(1);
+      expect(lastValues()).toMatchObject({
+        ticketId: 't1', userId: null, authorType: 'system', commentType: 'internal', isPublic: false, originPrincipalKind: 'system',
+      });
+      expect(String(lastValues().content)).toContain('needs evidence');
+    });
+
+    it('posts no comment when the resolution delivers directly (#9310)', async () => {
+      queueResult([occRow()]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(lastSet()).toMatchObject({ status: 'delivered' });
+      expect(chain.values.mock.calls).toHaveLength(0);
+    });
+
+    it('re-delivering the same resolution adds no second comment (#9310)', async () => {
+      queueResult([occRow({ status: 'awaiting_evidence' })]); queueResult([]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+      expect(chain.values.mock.calls).toHaveLength(0);
+    });
+
+    it('posts no comment when the CAS update loses a race (#9310)', async () => {
+      queueResult([occRow()]); queueResult([]); queueResult([]); // update returns no row
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(chain.values.mock.calls).toHaveLength(0);
     });
 
     it('a late resolution of a missed occurrence still records the delivery', async () => {

@@ -802,9 +802,17 @@ export async function addEvidence(orgId: string, occurrenceId: string, ref: Evid
   return db.transaction(async (tx) => {
     const current = await loadOccurrence(orgId, occurrenceId, tx);
     await insertEvidenceRef(orgId, occurrenceId, ref, actor, tx);
-    const t = transition(current.status, { type: 'evidence_added' });
+    // A missed occurrence is rescued only if its ticket was already resolved.
+    let deliveryStarted = false;
+    // Explicit-mode deliverables are never completed by their ticket (see ticket_resolved).
+    if (current.status === 'missed' && current.ticketId && current.completionMode === 'on_ticket_resolve') {
+      const [ticket] = await tx.select({ status: tickets.status }).from(tickets)
+        .where(and(eq(tickets.id, current.ticketId), eq(tickets.orgId, orgId), isNull(tickets.deletedAt))).limit(1);
+      deliveryStarted = ticket !== undefined && RESOLVED_LIKE.has(ticket.status);
+    }
+    const t = transition(current.status, { type: 'evidence_added', deliveryStarted });
     if (t.next !== null && t.next !== current.status) {
-      // Only awaiting_evidence → delivered gets here: the ticket resolution
+      // Only awaiting_evidence/missed → delivered gets here: the ticket resolution
       // started the delivery, this evidence completes it.
       const now = new Date();
       await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status, {
@@ -956,9 +964,27 @@ export async function applyTicketStatusChange(args: {
     patch.deliveredVia = null; patch.deliveryNote = null;
   }
 
-  await db.update(serviceDeliverableOccurrences).set(patch)
+  const updated = await db.update(serviceDeliverableOccurrences).set(patch)
     // CAS on the status we decided from: a concurrent write loses silently.
-    .where(and(occurrenceKey(args.orgId, occ.id), eq(serviceDeliverableOccurrences.status, current)));
+    .where(and(occurrenceKey(args.orgId, occ.id), eq(serviceDeliverableOccurrences.status, current)))
+    .returning({ id: serviceDeliverableOccurrences.id });
+
+  // #9310: tell the technician what is missing. Posted only by the CAS winner, and
+  // only on entry to awaiting_evidence (a redelivery is a no-op above), so exactly
+  // once per entry into that state. Internal + system-authored, same shape as the instructions comment, so the
+  // portal (is_public = true) never shows it.
+  if (outcome.next === 'awaiting_evidence' && updated.length > 0) {
+    await db.insert(ticketComments).values({
+      ticketId: args.ticketId,
+      userId: null,
+      authorName: 'Breeze',
+      authorType: 'system',
+      commentType: 'internal',
+      content: "This ticket's deliverable needs evidence before it counts as delivered. Attach a document or report run on the deliverable's occurrence.",
+      isPublic: false,
+      originPrincipalKind: 'system',
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
