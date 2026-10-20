@@ -20,6 +20,7 @@ import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting } from './contractMath';
 import { loadBilledFinalTermValues } from './contractBilledFinalTerm';
 import { emitContractEvent } from './contractEvents';
+import { rebaseUnmaterializedDeliverables } from './serviceDeliverableService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { pgErrorNode, isPgUniqueViolation } from '../utils/pgErrors';
 
@@ -1370,7 +1371,23 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   if (effectiveAutoRenew && (effectiveEndDate == null || effectiveTerm == null)) {
     throw new ContractServiceError('auto-renew requires an end date and renewal term', 400);
   }
-  await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
+  // #9309: a draft's deliverables are paused and still pinned to the old start;
+  // move the unmaterialized ones with it, in the same transaction.
+  const newStart = c.status === 'draft' && patch.startDate !== undefined && patch.startDate !== c.startDate
+    ? patch.startDate : null;
+  if (newStart === null) {
+    await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
+  } else {
+    await db.transaction(async (tx) => {
+      // CAS on the draft + old start `c` was read with: a concurrent activation
+      // or start edit must not have the re-base run against a stale `from`.
+      const [updated] = await tx.update(contracts).set(safeSet)
+        .where(and(eq(contracts.id, contractId), eq(contracts.status, 'draft'), eq(contracts.startDate, c.startDate)))
+        .returning({ id: contracts.id });
+      if (!updated) throw new ContractServiceError('Contract changed while it was being edited; reload and retry', 409, 'INVALID_STATE');
+      await rebaseUnmaterializedDeliverables(contractId, c.orgId, { from: c.startDate, to: newStart }, tx);
+    });
+  }
   return getOwnedContractOr404(contractId, actor);
 }
 
@@ -2132,6 +2149,16 @@ export async function activateContract(contractId: string, actor: ContractActor,
     const [row] = await tx.update(contracts)
       .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
       .where(eq(contracts.id, contractId)).returning();
+    // #9309: the sweep skipped this contract's deliverables while it was a draft.
+    // Re-base the ones with no occurrence yet onto the real start — or onto today
+    // when that start already passed, so a re-based deliverable is not born
+    // overdue or missed (rebaseUnmaterializedDeliverables says which it moves).
+    // DRAFTS ONLY: resume (paused -> active) also emits contract.activated, and
+    // a live contract's deliverables keep the schedule they were given.
+    if (c.status === 'draft') {
+      const today = todayISO(asOf);
+      await rebaseUnmaterializedDeliverables(contractId, c.orgId, { from: c.startDate, to: c.startDate > today ? c.startDate : today }, tx);
+    }
     return { row: row!, c };
   });
   await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
