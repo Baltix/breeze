@@ -512,3 +512,154 @@ describe('PatchList release date is timezone-stable for date-only values', () =>
       .toBe(new Date(2026, 8, 15).toLocaleDateString());
   });
 });
+
+describe('PatchList outstanding devices column (#8728)', () => {
+  const PATCH_ID = '88888888-8888-4888-8888-888888888888';
+  const device = (n: number) => ({
+    deviceId: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+    hostname: `host-${n}`,
+    status: 'online',
+    lastCheckedAt: '2026-10-01T12:00:00.000Z',
+  });
+
+  it('has no Devices column when the page cannot load devices (ring view)', () => {
+    render(<PatchList patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 3 })]} />);
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.queryByText('Devices')).toBeNull();
+    expect(desktop.queryByTestId(`patch-row-${PATCH_ID}-devices`)).toBeNull();
+  });
+
+  it('shows the count as a badge, and zero as a muted dash with no button', () => {
+    const zeroId = '99999999-9999-4999-8999-999999999999';
+    render(
+      <PatchList
+        patches={[
+          makePatch({ id: PATCH_ID, title: 'Needed', outstandingDeviceCount: 3 }),
+          makePatch({ id: zeroId, title: 'Done', outstandingDeviceCount: 0 }),
+        ]}
+        loadPatchDevices={vi.fn()}
+      />
+    );
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByText('Devices')).toBeTruthy();
+    expect(desktop.getByTestId(`patch-row-${PATCH_ID}-devices`).textContent).toBe('3 devices');
+    expect(desktop.queryByTestId(`patch-row-${zeroId}-devices`)).toBeNull();
+    expect(desktop.getByTestId(`patch-row-${zeroId}-devices-none`).textContent).toBe('—');
+  });
+
+  it('loads hostnames on demand when the count is clicked, and pages with Load more', async () => {
+    const loadPatchDevices = vi.fn()
+      .mockResolvedValueOnce({ devices: [device(1), device(2)], total: 3 })
+      .mockResolvedValueOnce({ devices: [device(3)], total: 3 });
+    render(
+      <PatchList
+        patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 3 })]}
+        loadPatchDevices={loadPatchDevices}
+      />
+    );
+    expect(loadPatchDevices).not.toHaveBeenCalled();
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    fireEvent.click(desktop.getByTestId(`patch-row-${PATCH_ID}-devices`));
+
+    const popover = await screen.findByTestId('patch-devices-popover');
+    expect(loadPatchDevices).toHaveBeenCalledWith(PATCH_ID, 1);
+    await waitFor(() => expect(within(popover).getByText('host-1')).toBeTruthy());
+    expect(within(popover).getByText('host-2')).toBeTruthy();
+    expect(within(popover).getByRole('link', { name: 'host-1' }).getAttribute('href'))
+      .toBe(`/devices/${device(1).deviceId}#patches`);
+
+    fireEvent.click(within(popover).getByTestId('patch-devices-load-more'));
+    await waitFor(() => expect(within(popover).getByText('host-3')).toBeTruthy());
+    expect(loadPatchDevices).toHaveBeenLastCalledWith(PATCH_ID, 2);
+    expect(within(popover).queryByTestId('patch-devices-load-more')).toBeNull();
+  });
+
+  it('shows an error with a retry when loading fails', async () => {
+    const loadPatchDevices = vi.fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ devices: [device(1)], total: 1 });
+    render(
+      <PatchList
+        patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 1 })]}
+        loadPatchDevices={loadPatchDevices}
+      />
+    );
+    fireEvent.click(within(screen.getByTestId('responsive-table-desktop')).getByTestId(`patch-row-${PATCH_ID}-devices`));
+
+    const popover = await screen.findByTestId('patch-devices-popover');
+    const retry = await within(popover).findByTestId('patch-devices-retry');
+    fireEvent.click(retry);
+    await waitFor(() => expect(within(popover).getByText('host-1')).toBeTruthy());
+  });
+
+  it('retries page 1, not the next page, after a reopen whose first load fails', async () => {
+    const loadPatchDevices = vi.fn()
+      .mockResolvedValueOnce({ devices: [device(1)], total: 3 })
+      .mockResolvedValueOnce({ devices: [device(2)], total: 3 })
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ devices: [device(1)], total: 3 });
+    render(
+      <PatchList
+        patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 3 })]}
+        loadPatchDevices={loadPatchDevices}
+      />
+    );
+    const trigger = within(screen.getByTestId('responsive-table-desktop')).getByTestId(`patch-row-${PATCH_ID}-devices`);
+
+    fireEvent.click(trigger);
+    let popover = await screen.findByTestId('patch-devices-popover');
+    await waitFor(() => expect(within(popover).getByText('host-1')).toBeTruthy());
+    fireEvent.click(within(popover).getByTestId('patch-devices-load-more'));
+    await waitFor(() => expect(within(popover).getByText('host-2')).toBeTruthy());
+
+    fireEvent.click(trigger); // close
+    await waitFor(() => expect(screen.queryByTestId('patch-devices-popover')).toBeNull());
+    fireEvent.click(trigger); // reopen: page-1 load rejects
+    popover = await screen.findByTestId('patch-devices-popover');
+    fireEvent.click(await within(popover).findByTestId('patch-devices-retry'));
+
+    await waitFor(() => expect(loadPatchDevices).toHaveBeenCalledTimes(4));
+    expect(loadPatchDevices.mock.calls.map((call) => call[1])).toEqual([1, 2, 1, 1]);
+    await waitFor(() => expect(within(popover).getByText('host-1')).toBeTruthy());
+    expect(within(popover).queryByText('host-2')).toBeNull();
+  });
+
+  it('ignores a response that lands after the popover was closed and reopened', async () => {
+    let resolveStale: (value: { devices: ReturnType<typeof device>[]; total: number }) => void = () => {};
+    const loadPatchDevices = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStale = resolve; }))
+      .mockResolvedValueOnce({ devices: [device(2)], total: 1 });
+    render(
+      <PatchList
+        patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 1 })]}
+        loadPatchDevices={loadPatchDevices}
+      />
+    );
+    const trigger = within(screen.getByTestId('responsive-table-desktop')).getByTestId(`patch-row-${PATCH_ID}-devices`);
+
+    fireEvent.click(trigger); // open: first load hangs
+    fireEvent.click(trigger); // close
+    fireEvent.click(trigger); // reopen: second load resolves
+    const popover = await screen.findByTestId('patch-devices-popover');
+    await waitFor(() => expect(within(popover).getByText('host-2')).toBeTruthy());
+
+    resolveStale({ devices: [device(9)], total: 1 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(within(popover).queryByText('host-9')).toBeNull();
+    expect(within(popover).getByText('host-2')).toBeTruthy();
+  });
+
+  it('closes on Escape', async () => {
+    render(
+      <PatchList
+        patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 1 })]}
+        loadPatchDevices={vi.fn().mockResolvedValue({ devices: [device(1)], total: 1 })}
+      />
+    );
+    fireEvent.click(within(screen.getByTestId('responsive-table-desktop')).getByTestId(`patch-row-${PATCH_ID}-devices`));
+    const popover = await screen.findByTestId('patch-devices-popover');
+    fireEvent.keyDown(popover, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('patch-devices-popover')).toBeNull());
+  });
+});
