@@ -1239,6 +1239,9 @@ export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topo
 export * from './topologyPhysical';
 export * from './topologyPhysicalNormalized';
 export * from './topologyUnifiNormalized';
+export * from './topologyUnifiV2';
+export * from './topologyUnifiV2Normalized';
+export { canonicalizeUnifiResourceV2 } from './topologyUnifiV2Canonical';
 export { canonicalizeAdjacencyReport, canonicalizeAdjacencyScope, canonicalizeUnifiResource } from './topologyPhysicalCanonical';
 export type { AdjacencyDigestIdentity, UnifiDigestIdentity } from './topologyPhysicalCanonical';
 
