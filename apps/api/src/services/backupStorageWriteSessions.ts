@@ -601,7 +601,16 @@ export async function mintBackupWriteSession(
       // The only place the destination's key prefix is read for a snapshot:
       // the new id's key root is fixed here, on its reservation.
       const rooted = (deps.resolveMintKeyRoot ?? resolveMintKeyRoot)(input.provider, input.providerConfig);
-      if (!rooted.ok) return { refused: rooted.reason };
+      if (!rooted.ok) {
+        // The operator sees backupWriteRefusalMessage; Test connection on the
+        // destination names the rule the stored prefix breaks.
+        console.warn('[backupStorageWriteSessions] refused a write session: the destination key prefix is invalid', {
+          jobId: input.jobId,
+          configId: input.configId,
+          reason: rooted.reason,
+        });
+        return { refused: rooted.reason };
+      }
       const keyRoot = snapshotKeyRootOf({ keyLayout: rooted.root.layout, keyPrefix: rooted.root.prefix });
       if (!keyRoot) return { refused: 'invalid_destination_prefix' };
       if (await baseRootRefused(keyRoot)) return { refused: 'base_key_root_mismatch' };

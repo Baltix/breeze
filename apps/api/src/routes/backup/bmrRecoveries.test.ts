@@ -725,10 +725,18 @@ describe('bare-metal recoveries routes', () => {
         expect(body).toMatchObject({
           error: 'recovery_requires_token_mode',
           code: 'recovery_requires_token_mode',
-          message: 'This snapshot uses a key prefix and can only be recovered with token-mode download. Update the recovery media.',
+          // The one-time code is already claimed, so the operator also needs a new one.
+          message: 'This snapshot uses a key prefix and can only be recovered with token-mode download. Update the recovery media, then reissue the recovery code.',
         });
         expect(body).not.toHaveProperty('bootstrap');
         expect(body).not.toHaveProperty('token');
+        expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'bmr.recovery.bootstrap_refused',
+          resourceType: 'bare_metal_recovery',
+          resourceId: RECOVERY_ID,
+          result: 'failure',
+          details: expect.objectContaining({ reason: 'recovery_requires_token_mode' }),
+        }));
       } finally {
         bootstrapHook.dropDownload = false;
       }

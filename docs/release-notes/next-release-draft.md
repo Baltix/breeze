@@ -29,7 +29,9 @@ Last release: **v0.124.0** (2026-10-19).
   already has a prefix:
   - The first backup after upgrading on such a destination is a **full backup**
     (an incremental never builds on a snapshot stored under another prefix). The
-    same happens after any later prefix change.
+    same happens after any later prefix change; an incremental already scheduled
+    against a base under the old prefix is refused (`base_key_root_mismatch`) and
+    the next run is full.
   - **IAM:** a policy scoped to `bucket/snapshots/*` must also allow
     `bucket/<prefix>/*`. **Test connection** writes under the prefix and catches
     this. The conditional-write capability probe now also writes under
@@ -37,8 +39,9 @@ Last release: **v0.124.0** (2026-10-19).
   - A destination whose stored prefix is invalid (empty or `.`/`..` segments,
     characters outside `A–Z a–z 0–9 ! _ . * ' ( ) -`, a `snapshots` segment, over
     256 characters) is no longer backed up: its backups fail with
-    `invalid_destination_prefix` and a message asking for a corrected prefix.
-    Fix it in the destination form (it flags the problem inline).
+    `invalid_destination_prefix` and a message asking for a corrected prefix, and
+    **Test connection** now fails for it (it used to pass). Fix it in the
+    destination form (it flags the problem inline).
   - Do not roll back below v0.124.0 after this release has written prefixed
     snapshots: older API versions cannot read them.
 

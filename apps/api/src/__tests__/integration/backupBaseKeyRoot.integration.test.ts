@@ -131,6 +131,45 @@ runDb('on a prefixed S3 destination, pins the newest base under that prefix, pas
   expect(outcome.baseSnapshotId).toBe(`prefixed-older-${unique}`);
 });
 
+// W03: an invalid stored prefix has no run root, so nothing can be a base;
+// the dispatch goes ahead as a full run and mint then refuses the write.
+runDb('on an S3 destination with an invalid stored prefix, pins no base and says why (#7081 W03)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const providerConfig = {
+    bucket: `bk-s3-bad-${unique}`, region: 'us-east-1', endpoint: 'https://s3.example.test',
+    accessKey: 'test-access-key', secretKey: 'test-secret-key', prefix: 'a//b',
+  };
+  const identity = normalizeStorageIdentity('s3', providerConfig);
+  const ctx = await withSystemDbAccessContext(async () => {
+    const base = await seed(unique);
+    const [config] = await db.insert(backupConfigs).values({
+      orgId: base.orgId, name: `BKC s3 bad ${unique}`, type: 'file', provider: 's3', providerConfig,
+    }).returning({ id: backupConfigs.id });
+    const c = { ...base, configId: config!.id, identity };
+    await snapshot(c, `legacy-candidate-${unique}`, DAY_MS, LEGACY);
+    await snapshot(c, `prefixed-candidate-${unique}`, DAY_MS, PREFIXED);
+    const [dispatchJob] = await db.insert(backupJobs).values({ orgId: c.orgId, configId: c.configId, deviceId: c.deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+    return { ...c, dispatchJobId: dispatchJob!.id };
+  });
+
+  const warnings: string[] = [];
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => { warnings.push(args.map(String).join(' ')); });
+  let outcome;
+  try {
+    outcome = await withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
+      deviceId: ctx.deviceId, configId: ctx.configId, jobId: ctx.dispatchJobId, mode: 'file', provider: 's3', providerConfig,
+    }));
+  } finally {
+    warnSpy.mockRestore();
+  }
+
+  expect(outcome!.baseSnapshotId).toBe('');
+  const [row] = await withSystemDbAccessContext(() => db.select().from(backupJobs).where(eq(backupJobs.id, ctx.dispatchJobId)));
+  expect(row!.baseSnapshotId).toBeNull();
+  expect(row!.storageIdentity).toBe(identity);
+  expect(warnings.find((w) => w.includes('will upload a FULL copy'))).toContain('reason=invalid_destination_prefix');
+});
+
 runDb('a retired prefixed snapshot\'s retirement records its key root (#7081)', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const ctx = await withSystemDbAccessContext(async () => {

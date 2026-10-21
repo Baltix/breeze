@@ -309,6 +309,40 @@ runDb('per-root GC: an org whose destination writes a prefix and has no legacy r
   expect(touched.some((key) => key.startsWith('snapshots/'))).toBe(false);
 });
 
+// W03: an invalid stored prefix gives the org no write root at all. It must
+// not fall back to "writes the bucket root" — that would list the bucket root
+// with credentials that may be scoped to the (intended) prefix.
+runDb('per-root GC: an org whose stored prefix is invalid runs only under roots it has rows in, never the bucket root by default (#7081 W03)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const bucket = `gc-roots-badprefix-${unique}`;
+  const identity = normalizeStorageIdentity('s3', s3Config(bucket));
+  const old = new Date(Date.now() - 20 * DAY_MS);
+
+  await withSystemDbAccessContext(async () => {
+    const [partner] = await db.insert(partners).values({
+      name: `Root Partner ${unique}`, slug: `root-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
+    }).returning({ id: partners.id });
+    const orgD = await seedOrg(unique, partner!.id, 'd', s3Config(bucket, 'a//b'));
+    await insertSnapshot(orgD, 'd1', identity, { keyLayout: 'prefixed_flat', keyPrefix: 'orgD' });
+  });
+
+  s3.put(bucket, 'orgD/snapshots/d1/manifest.json', manifest(['snapshots/d1/files/a.dat']), old);
+  s3.put(bucket, 'orgD/snapshots/d1/files/a.dat', 'a', old);
+  s3.put(bucket, 'orgD/snapshots/d9/files/x.dat', 'x', old); // the org's own old orphan under its recorded root
+  s3.put(bucket, 'snapshots/z9/files/z.dat', 'z', old);
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(s3.keys(bucket)).toEqual([
+    'orgD/snapshots/d1/files/a.dat',
+    'orgD/snapshots/d1/manifest.json',
+    'snapshots/z9/files/z.dat',
+  ]);
+  const listed = s3.callsFor(bucket).flatMap((c) => (c.op === 'list' ? [c.prefix] : []));
+  expect(listed.filter((p) => p === 'orgD/snapshots/')).toHaveLength(1);
+  expect(listed.some((p) => p.startsWith('snapshots/'))).toBe(false);
+});
+
 runDb('loadReservationGcState reports each reclaimable reservation\'s recorded key root, null when unreadable (#7081)', async () => {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const identity = normalizeStorageIdentity('s3', s3Config(`gc-roots-res-${unique}`));

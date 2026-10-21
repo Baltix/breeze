@@ -304,13 +304,10 @@ describe('probeConditionalWrites', () => {
     expect(keys).toEqual([keys[0], keys[0], keys[0]]);
   });
 
-  it('probes at the bucket root when the stored prefix is invalid (mint refuses that destination anyway)', async () => {
-    holder.send
-      .mockResolvedValueOnce({ VersionId: 'v1' })
-      .mockRejectedValueOnce(httpError(412, 'PreconditionFailed'))
-      .mockResolvedValueOnce({});
-    await probeConditionalWrites({ ...CFG, prefix: 'a//b' });
-    expect(holder.send.mock.calls[0]![0].input.Key).toMatch(/^breeze-capability-probe\/[0-9a-f-]{36}$/);
+  it('never falls back to the bucket root: an invalid stored prefix is unsupported with no storage call', async () => {
+    await expect(probeConditionalWrites({ ...CFG, prefix: 'a//b' }))
+      .resolves.toEqual({ supported: false, reason: 'invalid_destination_prefix' });
+    expect(holder.send).not.toHaveBeenCalled();
   });
 
   it('is unsupported on any other error, with a reason', async () => {

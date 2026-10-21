@@ -467,7 +467,12 @@ async function buildRecoveryExchangeBootstrap(
       snapshotId: snapshot.snapshotId,
       keyLayout: snapshot.keyLayout,
     });
-    return { ...RECOVERY_REQUIRES_TOKEN_MODE };
+    // The one-time code is already claimed by the time the bootstrap is
+    // built, so the operator also needs a new code.
+    return {
+      ...RECOVERY_REQUIRES_TOKEN_MODE,
+      message: `${RECOVERY_REQUIRES_TOKEN_MODE.message.replace(/\.$/, '')}, then reissue the recovery code.`,
+    };
   }
   return payload;
 }
@@ -743,6 +748,17 @@ bmrRecoveryPublicRoutes.post(
         resolvedSnapshot
       );
       if ('error' in bootstrap) {
+        if (bootstrap.error === RECOVERY_REQUIRES_TOKEN_MODE.error) {
+          writeAuditEvent(c, {
+            orgId: rec.orgId,
+            action: 'bmr.recovery.bootstrap_refused',
+            resourceType: 'bare_metal_recovery',
+            resourceId: rec.id,
+            result: 'failure',
+            details: { tokenId: tokenRow!.id, snapshotId: rec.snapshotId, reason: RECOVERY_REQUIRES_TOKEN_MODE.code },
+            errorMessage: bootstrap.message,
+          });
+        }
         return c.json(bootstrap, 409);
       }
 

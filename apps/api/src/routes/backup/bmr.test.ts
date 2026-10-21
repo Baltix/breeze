@@ -1002,6 +1002,15 @@ describe('bmr routes', () => {
         code: 'recovery_requires_token_mode',
         message: 'This snapshot uses a key prefix and can only be recovered with token-mode download. Update the recovery media.',
       });
+      // A refusal of its own, not a contradiction of the token's authentication.
+      expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'bmr.recovery.bootstrap_refused',
+        result: 'failure',
+        details: expect.objectContaining({ reason: 'recovery_requires_token_mode' }),
+      }));
+      expect(writeAuditEventMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'bmr.recovery.authenticate', result: 'failure',
+      }));
     } finally {
       bootstrapHook.dropDownload = false;
     }
