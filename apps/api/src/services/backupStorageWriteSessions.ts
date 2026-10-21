@@ -40,8 +40,8 @@ import { normalizeStorageIdentity } from './backupStorageIdentity';
 import { effectiveHelperProtocol } from './backupHelperProtocols';
 import { loadOriginKeyRootRows } from './backupOriginKeyRoots';
 import {
+  keyRootForNewSnapshot,
   keyRootId,
-  LEGACY_FLAT_ROOT,
   logicalKeyFrom,
   originKeyRootAllows,
   physicalKeyFits,
@@ -397,15 +397,14 @@ export type MintKeyRootResult =
  * is what every later storage call of the id uses (redelivery, resume,
  * publication, cleanup).
  *
- * Hard-wired to the legacy root as a release gate: storage GC, reconcile and
- * the cleanup job already handle prefixed roots (#7081), but no row may record
- * `prefixed_flat` until the release that applies destination prefixes
- * replaces this body with `keyRootForNewSnapshot(provider, providerConfig)`.
- * Storage GC and dispatch base selection also read it, as the root each
+ * An S3 destination with a valid prefix writes `<prefix>/snapshots/`; every
+ * other destination writes the bucket root. An invalid stored prefix refuses
+ * the backup (`invalid_destination_prefix`), never falling back to the bucket
+ * root. Storage GC and dispatch base selection also read it, as the root each
  * destination writes now.
  */
-export function resolveMintKeyRoot(_provider: string, _providerConfig: Record<string, unknown>): MintKeyRootResult {
-  return { ok: true, root: LEGACY_FLAT_ROOT };
+export function resolveMintKeyRoot(provider: string, providerConfig: Record<string, unknown>): MintKeyRootResult {
+  return keyRootForNewSnapshot(provider, providerConfig);
 }
 
 export const defaultWriteStorage: WriteStorage = {

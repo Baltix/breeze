@@ -27,6 +27,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { buildS3StorageClient } from './backupSnapshotStorage';
+import { keyRootForNewSnapshot, physicalKeyFor } from './backupKeyLayout';
 
 export type StorageProviderConfig = Record<string, unknown>;
 
@@ -353,10 +354,20 @@ export type ConditionalWriteProbeResult = {
  * call is time-bounded. The probe object is removed by the version id each
  * write returned (on a versioned or object-lock bucket a plain delete would
  * only add a delete marker), best effort.
+ *
+ * The probe object is written where this destination writes new snapshots
+ * (#7081): under `<prefix>/` when it has a valid key prefix — a credential
+ * scoped to `bucket/<prefix>/*` cannot write at the bucket root — and at the
+ * bucket root otherwise. `<prefix>/breeze-capability-probe/` is outside
+ * `<prefix>/snapshots/`, so storage GC never lists it. A destination whose
+ * stored prefix is invalid is probed at the bucket root, as before; its
+ * backups are refused at mint until the prefix is corrected.
  */
 export async function probeConditionalWrites(cfg: StorageProviderConfig): Promise<ConditionalWriteProbeResult> {
   const { bucket, client: s3 } = client(cfg);
-  const key = `${CAPABILITY_PROBE_PREFIX}${randomUUID()}`;
+  const writes = keyRootForNewSnapshot('s3', cfg);
+  const probeKey = `${CAPABILITY_PROBE_PREFIX}${randomUUID()}`;
+  const key = writes.ok ? physicalKeyFor(writes.root, probeKey) : probeKey;
   const versions: Array<string | undefined> = [];
   let result: ConditionalWriteProbeResult;
   try {
