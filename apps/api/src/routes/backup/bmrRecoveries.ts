@@ -39,8 +39,10 @@ import {
 import {
   asRecord,
   BMR_MIN_HELPER_VERSION,
+  bootstrapServesKeyLayout,
   buildAuthenticatedBootstrapPayload,
   isHelperVersionAtLeast,
+  RECOVERY_REQUIRES_TOKEN_MODE,
   generateRecoveryToken,
   hashRecoveryToken,
   isValidRecoveryTokenFormat,
@@ -401,7 +403,7 @@ async function buildRecoveryExchangeBootstrap(
     .where(eq(devices.id, tokenRow.deviceId))
     .limit(1);
 
-  return buildAuthenticatedBootstrapPayload({
+  const payload = buildAuthenticatedBootstrapPayload({
     tokenId: tokenRow.id,
     deviceId: tokenRow.deviceId,
     snapshotId: snapshot.id,
@@ -456,6 +458,18 @@ async function buildRecoveryExchangeBootstrap(
     fileIndex: negotiated?.fileIndex,
     integrity,
   });
+  // #7081 R19: a prefixed snapshot is recoverable only through the
+  // token-mode download; never hand out a bootstrap without one.
+  if (!bootstrapServesKeyLayout(snapshot.keyLayout, payload)) {
+    console.error('[bmrRecoveries] refused an exchange bootstrap: the snapshot uses a key prefix and no token-mode download was issued', {
+      tokenId: tokenRow.id,
+      recoveryId: recovery.id,
+      snapshotId: snapshot.snapshotId,
+      keyLayout: snapshot.keyLayout,
+    });
+    return { ...RECOVERY_REQUIRES_TOKEN_MODE };
+  }
+  return payload;
 }
 
 bmrRecoveryPublicRoutes.post(
