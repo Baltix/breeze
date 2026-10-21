@@ -325,11 +325,9 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             return next !== undefined ? { ...prev, desktopAccess: next } : prev;
           });
         }
-      } else if (type === "device.decommissioned") {
-        fetchDevice();
       }
     },
-    [deviceId, fetchDevice],
+    [deviceId],
   );
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
@@ -339,7 +337,6 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
       "device.online",
       "device.offline",
       "device.updated",
-      "device.decommissioned",
     ]);
   }, [subscribe]);
 
