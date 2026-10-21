@@ -12,9 +12,9 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/monitoring"
+	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/state"
-	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
 // W09 (#8148): the periodic senders skip a route the server deferred, before
