@@ -142,6 +142,29 @@ describe('assembleCustomerInvoiceDocument', () => {
     expect(JSON.stringify(doc)).not.toContain(NOTE);
   });
 
+  it('an unstamped draft in a pt-BR partner prints the localised labor label (W3a, spec §3.7)', async () => {
+    setRows({ partners: [{ ...PIN_PARTNER_ROW, invoiceLineShowNote: false, settings: { language: 'pt-BR' } }] });
+    const doc = await assembleCustomerInvoiceDocument(DRAFT, 'staff');
+    expect(doc.documentLocale).toBe('pt-BR');
+    expect(doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!.name).toBe('Mão de obra');
+  });
+
+  it('preloaded branding: no partner / branding read opens a second (system) context — the PDF render holds an open transaction', async () => {
+    const doc = await assembleCustomerInvoiceDocument(row(), 'staff', {
+      surface: 'pdf',
+      preloaded: { partner: { ...PIN_PARTNER_ROW, billingEmail: 'b@example.test' } as never, brand: { logoUrl: 'https://cdn.example.test/l.png', primaryColor: '#123456' } },
+    });
+    expect(state.db!.selects.filter((s) => s.table === 'partners' || s.table === 'portal_branding')).toHaveLength(0);
+    expect(state.db!.selects.every((s) => s.ctx !== 'system')).toBe(true);
+    expect(doc.branding).toMatchObject({ partnerName: 'Example MSP', contactEmail: 'b@example.test', logoUrl: 'https://cdn.example.test/l.png', primaryColor: '#123456' });
+  });
+
+  it('a stamped document locale wins over the partner language for the labor label', async () => {
+    setRows({ partners: [{ ...PIN_PARTNER_ROW, settings: { language: 'pt-BR' } }] });
+    const doc = await assembleCustomerInvoiceDocument(row({ documentLocale: 'en', lineShowNote: false }), 'staff');
+    expect(doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!.name).toBe('Labor');
+  });
+
   it('a draft with partner showNote=true keeps the note (the resolver, not a hard-coded withhold)', async () => {
     const doc = await assembleCustomerInvoiceDocument(DRAFT, 'staff');
     expect(doc.lines.find((l) => l.id === PIN_LINE_IDS.timeEntry)!.description).toBe(NOTE);
@@ -231,9 +254,9 @@ describe('assembleCustomerInvoiceDocument', () => {
   it('the header is the customer keyset plus displayStatus; no internal field', async () => {
     const doc = await assembleCustomerInvoiceDocument(row(), 'staff');
     expect(Object.keys(doc.invoice).sort()).toEqual([
-      'amountPaid', 'balance', 'billToName', 'currencyCode', 'depositDue', 'displayStatus', 'dueDate', 'id',
-      'invoiceNumber', 'issueDate', 'lineGrouping', 'notes', 'sellerSnapshot', 'status', 'subtotal', 'taxRate',
-      'taxTotal', 'termsAndConditions', 'total',
+      'amountPaid', 'balance', 'billToAddress', 'billToName', 'billToTaxId', 'currencyCode', 'depositDue', 'displayStatus',
+      'dueDate', 'id', 'invoiceNumber', 'issueDate', 'lineGrouping', 'notes', 'sellerSnapshot', 'status', 'subtotal',
+      'taxRate', 'taxTotal', 'terms', 'termsAndConditions', 'total',
     ]);
     expect(Object.keys(doc).sort()).toEqual(['branding', 'documentLocale', 'invoice', 'lines']);
     expect(JSON.stringify(doc)).not.toContain('INTERNAL-ONLY');
