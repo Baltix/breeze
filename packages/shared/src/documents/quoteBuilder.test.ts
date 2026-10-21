@@ -339,3 +339,86 @@ describe('buildQuoteDocumentModel', () => {
     expect(build('recurring')).toEqual(build('recurring'));
   });
 });
+
+// Assertions carried over from the portal's quoteBlocks.test.tsx (deleted in W2b #9419).
+describe('buildQuoteDocumentModel — carried-over portal assertions', () => {
+  const block = (n: number, sortOrder: number, b: Pick<CustomerQuoteBlockDto, 'blockType' | 'content'>): CustomerQuoteBlockDto =>
+    ({ id: idOf(n), quoteId: idOf(1), orgId: idOf(2), sortOrder, createdAt: '2026-03-01T12:00:00.000Z', ...b }) as CustomerQuoteBlockDto;
+  const withBlocks = (blocks: CustomerQuoteBlockDto[]): CustomerQuoteDocument => ({ ...fx.empty, blocks });
+  const contract = (n: number, content: Record<string, unknown>) =>
+    block(n, 0, { blockType: 'contract', content } as never);
+
+  it('an unknown block type renders nothing (customers never see debris)', () => {
+    const m = buildQuoteDocumentModel(withBlocks([block(9, 0, { blockType: 'mystery_block', content: { foo: 'bar' } } as never)]), EN);
+    expect(m.blocks).toEqual([]);
+    expect(m.agreements).toEqual([]);
+  });
+
+  it('a contract block is an agreement, never a body block', () => {
+    const m = buildQuoteDocumentModel(withBlocks([
+      block(1, 0, { blockType: 'heading', content: { level: 2, text: 'Scope' } }),
+      contract(2, { templateName: 'MSA', versionNumber: 1, sourceType: 'authored', renderedHtml: '<p>Terms body</p>', fileUrl: null }),
+    ]), EN);
+    expect(m.blocks.map((b) => b.kind)).toEqual(['heading']);
+    expect(m.agreements).toHaveLength(1);
+  });
+
+  it('the agreement title and footer fall back label → template name → "Agreement"', () => {
+    const only = (content: Record<string, unknown>) => buildQuoteDocumentModel(withBlocks([contract(3, content)]), EN).agreements[0]!;
+    const label = only({ label: 'Master Services Agreement', versionNumber: 4, sourceType: 'authored', renderedHtml: '<p>x</p>', fileUrl: null });
+    expect(label.title).toBe('Master Services Agreement');
+    expect(label.body).toMatchObject({ kind: 'authored', footer: 'Master Services Agreement — v4' });
+    const bare = only({ versionNumber: 5, sourceType: 'authored', renderedHtml: '<p>x</p>', fileUrl: null });
+    expect(bare.title).toBe('Agreement');
+    expect(bare.body).toMatchObject({ footer: 'Agreement — v5' });
+  });
+
+  it('agreement vocabulary: "Agreement content/file unavailable", "Download agreement"', () => {
+    const authored = buildQuoteDocumentModel(withBlocks([contract(4, { templateName: 'MSA', versionNumber: 1, sourceType: 'authored', renderedHtml: null, fileUrl: null })]), EN).agreements[0]!;
+    expect(authored.body).toMatchObject({ kind: 'authored', html: null, unavailableText: 'Agreement content unavailable' });
+    const uploaded = buildQuoteDocumentModel(withBlocks([contract(5, { templateName: 'MSA', versionNumber: 2, sourceType: 'uploaded', renderedHtml: null, fileUrl: '/f/msa.pdf' })]), EN).agreements[0]!;
+    expect(uploaded.body).toMatchObject({ kind: 'uploaded', downloadLabel: 'Download agreement', unavailableText: 'Agreement file unavailable' });
+    expect((uploaded.body as { file: unknown }).file).toEqual({ kind: 'agreement_file', id: idOf(5) });
+    const noFile = buildQuoteDocumentModel(withBlocks([contract(6, { templateName: 'MSA', versionNumber: 1, sourceType: 'uploaded', renderedHtml: null, fileUrl: null })]), EN).agreements[0]!;
+    expect((noFile.body as { file: unknown }).file).toBeNull();
+  });
+
+  it('a name with a distinct description is a title plus blurb; a legacy line uses the description as the title', () => {
+    const rows = allRows(buildQuoteDocumentModel(fx.issued, EN));
+    expect(rows[0]).toMatchObject({ title: 'Firewall', blurb: 'Rack-mounted pair' });
+    expect(rows[1]).toMatchObject({ title: 'Installation', blurb: null });
+  });
+
+  it('agreements expose the labels the component prints (heading, Read, Hide)', () => {
+    expect(build('agreements').agreementLabels).toEqual({ heading: 'Agreements', read: 'Read', hide: 'Hide' });
+  });
+
+  // #3205 W05 decision 21 (the web Preview's zero-recurring test, carried over): a device-set line
+  // counting ZERO devices is a first-class state; visibility keys on recurrence, amounts stay 0.00.
+  it('a zero-quantity recurring device-set line still shows the recurring rows, the aside and the estimate sentence', () => {
+    const zero = withLines(
+      {
+        ...fx.deviceSet,
+        quote: { ...fx.deviceSet.quote, subtotal: '0.00', total: '0.00', monthlyRecurringTotal: '0.00', dueOnAcceptanceTotal: '0.00' },
+      },
+      (l) => ({ ...l, quantity: '0.00', lineTotal: '0.00' }),
+    );
+    const m = buildQuoteDocumentModel(zero, EN);
+    expect(m.totals.rows.map((r) => r.key)).toContain('monthly');
+    expect(m.totals.aside?.rows[0]?.value).toMatchObject({ text: '$0.00' });
+    expect(allRows(m)[0]!.descriptor[0]).toMatch(/each billing period/);
+  });
+
+  it('uses the canonical case-sensitive nouns for IoT and NAS roles', () => {
+    const m = buildQuoteDocumentModel(
+      withLines(fx.deviceSet, (l) => (l.contractLineType === 'per_device_role' ? { ...l, deviceRoles: ['iot', 'nas'], siteName: null } : l)),
+      EN,
+    );
+    expect(allRows(m)[0]!.descriptor[0]).toContain('IoT devices, NAS devices');
+  });
+
+  it('a single-category quote has no category breakdown rows', () => {
+    const m = buildQuoteDocumentModel({ ...fx.recurring, quote: { ...fx.recurring.quote, categoryBreakdown: [fx.recurring.quote.categoryBreakdown[1]!] } }, EN);
+    expect(m.totals.rows.some((r) => r.key.startsWith('category:'))).toBe(false);
+  });
+});
