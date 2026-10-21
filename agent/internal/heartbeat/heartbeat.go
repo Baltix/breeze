@@ -2221,10 +2221,13 @@ func (h *Heartbeat) Start() {
 	// part of the sendInventory fan-out (they run on a daily cadence), so kick
 	// them off here too — a freshly started/enrolled agent should report hardware
 	// and pending patches promptly rather than waiting for the first daily tick.
-	go h.sendInventory()
-	go h.sendHardwareInventory()
-	go h.sendPatchInventory()
-	go h.runProcessSampler()
+	// W09: each bulk task waits its own U(0, 120 s) (startup_stagger.go).
+	h.staggerStartup([]startupTask{
+		{name: "inventory", run: h.sendInventory},
+		{name: "hardware inventory", run: h.sendHardwareInventory},
+		{name: "patch inventory", run: h.sendPatchInventory},
+	}, startupStaggerWindow, rand.Float64, time.After)
+	go h.runProcessSampler() // already waits one interval before its first sample
 
 	// Reliability cadence persists across restarts (#1906). Seed the in-memory
 	// timer from the last persisted post instead of "now", and only post on
