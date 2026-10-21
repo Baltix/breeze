@@ -61,6 +61,20 @@ export default function DeviceDetailPage(props: DeviceDetailPageProps) {
   );
 }
 
+// True when history.back() is known to stay inside Breeze: either Astro's
+// ClientRouter pushed an entry in this tab (history.state.index > 0 — the
+// referrer is frozen at the last hard load, so it can't see soft navigations),
+// or this document was hard-loaded from a same-origin page.
+function cameFromSameOrigin(): boolean {
+  const index = (window.history.state as { index?: unknown } | null)?.index;
+  if (typeof index === "number" && index > 0) return true;
+  try {
+    return !!document.referrer && new URL(document.referrer).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   const { t } = useTranslation("devices");
   const [device, setDevice] = useState<Device | null>(null);
@@ -391,9 +405,11 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   };
   // Back returns to wherever the tech came from (list filters, scroll, org);
   // a fresh tab / deep link has no history to pop, so fall to the org-aware
-  // Devices crumb instead.
+  // Devices crumb instead. history.length alone can't tell an in-app entry
+  // from about:blank / another site (#9259), so only pop when the page was
+  // reached from a same-origin document.
   const handleBack = () => {
-    if (typeof window !== "undefined" && window.history.length > 1) {
+    if (typeof window !== "undefined" && window.history.length > 1 && cameFromSameOrigin()) {
       window.history.back();
       return;
     }
