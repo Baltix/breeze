@@ -26,6 +26,9 @@ import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import ForceRebootDialog from "./ForceRebootDialog";
+import { showToast } from "../shared/Toast";
+import { agentSupportsForceReboot, FORCE_REBOOT_MIN_AGENT_VERSION } from "@breeze/shared";
 import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useCanMoveDeviceOrg } from "@/lib/moveOrgCapability";
@@ -426,6 +429,10 @@ export default function DeviceActions({
   const canRecoverAgent =
     can("devices", "recover_agent") && device.status !== "decommissioned";
   const canMoveOrg = useCanMoveDeviceOrg();
+  // #8729: POST /devices/:id/force-reboot requires devices.execute (plus an
+  // interactive session, MFA and a step-up the dialog collects).
+  const canForceReboot = can("devices", "execute");
+  const [forceRebootOpen, setForceRebootOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
   const moreTriggerRef = useRef<HTMLButtonElement>(null);
@@ -450,6 +457,12 @@ export default function DeviceActions({
   };
 
   const handleAction = async (action: string) => {
+    // #8729: owned here, not by the page: the dialog collects the typed
+    // hostname and the step-up itself.
+    if (action === "force_reboot") {
+      openForceReboot();
+      return;
+    }
     // Return focus to the open menu's trigger before the item unmounts, so a
     // dialog opened by the action restores focus there rather than to <body>.
     if (menuOpen) moreTriggerRef.current?.focus();
@@ -496,6 +509,50 @@ export default function DeviceActions({
       setLoading(false);
     }
   };
+
+  // #8729: disabled with its reason, so nobody starts the MFA step for a device
+  // that cannot do it. The server's 409s (DEVICE_OFFLINE,
+  // AGENT_UPGRADE_REQUIRED) stay the real check.
+  const forceRebootSupported = agentSupportsForceReboot(device.agentVersion);
+  const forceRebootTitle = !online
+    ? offlineTitle
+    : !forceRebootSupported
+      ? t("deviceActions.forceRebootAgentUpgradeRequired", { version: FORCE_REBOOT_MIN_AGENT_VERSION })
+      : t("deviceActions.forceRebootHint");
+  const openForceReboot = () => {
+    if (menuOpen) moreTriggerRef.current?.focus();
+    else if (powerMenuOpen) powerTriggerRef.current?.focus();
+    closeMenus();
+    setForceRebootOpen(true);
+  };
+  const forceRebootMenuItem = canForceReboot && (
+    <button
+      type="button"
+      data-testid="device-power-action-force-reboot"
+      onClick={openForceReboot}
+      aria-disabled={(!online || !forceRebootSupported) || undefined}
+      title={forceRebootTitle}
+      role="menuitem"
+      tabIndex={-1}
+      className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+    >
+      <RotateCcw className="h-4 w-4" />
+      {t("deviceActions.forceRebootNow")}
+    </button>
+  );
+  const forceRebootDialog = forceRebootOpen && (
+    <ForceRebootDialog
+      open
+      device={{ id: device.id, hostname: device.hostname, os: device.os }}
+      onClose={() => setForceRebootOpen(false)}
+      onCompleted={() =>
+        showToast({
+          type: "success",
+          message: t("deviceActions.forceRebootQueued", { hostname: device.hostname }),
+        })
+      }
+    />
+  );
 
   const closeModal = () => {
     if (!loading) {
@@ -650,6 +707,7 @@ export default function DeviceActions({
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
               </button>
+              {forceRebootMenuItem}
               {canWake && device.status === "offline" && (
                 <button
                   type="button"
@@ -737,6 +795,7 @@ export default function DeviceActions({
             </DropdownPopup>
         </DropdownRoot>
 
+        {forceRebootDialog}
         {modalType === "decommission" ? (
           <RemoveDeviceDialog
             open
@@ -929,6 +988,15 @@ export default function DeviceActions({
               icon: <RotateCcw className="h-4 w-4" />,
               reason: queuedReason,
             })}
+            {canForceReboot &&
+              sheetItem({
+                action: "force_reboot",
+                label: t("deviceActions.forceRebootNow"),
+                icon: <RotateCcw className="h-4 w-4" />,
+                reason: !online || !forceRebootSupported ? forceRebootTitle : undefined,
+                tone: "destructive",
+                testId: "device-power-action-force-reboot",
+              })}
             {device.os === "windows" &&
               sheetItem({
                 action: "reboot_safe_mode",
@@ -1126,6 +1194,7 @@ export default function DeviceActions({
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
               </button>
+              {forceRebootMenuItem}
               {device.os === "windows" && (
                 <button
                   type="button"
@@ -1293,6 +1362,7 @@ export default function DeviceActions({
       </div>
       )}
 
+      {forceRebootDialog}
       {modalType === "decommission" ? (
         <RemoveDeviceDialog
           open
