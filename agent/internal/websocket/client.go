@@ -252,6 +252,10 @@ type Client struct {
 	// Written and read only on the reconnect-loop goroutine.
 	connStartedAt time.Time
 
+	// drain is the server's drain hint for the current socket (drain.go).
+	// Loop-goroutine owned, like connStartedAt.
+	drain drainHint
+
 	// testHooks are nil in production; tests set them before Start.
 	testHooks clientTestHooks
 }
@@ -262,6 +266,8 @@ type clientTestHooks struct {
 	connected chan<- struct{}
 	// beforeInstall runs between a successful dial and the install.
 	beforeInstall func()
+	// drainStored receives (non-blocking) after readPump stored a drain hint.
+	drainStored chan<- struct{}
 }
 
 // RevocationLeaseMessage is the server's answer to a revocation-lease renewal.
@@ -546,6 +552,7 @@ func (c *Client) reconnectLoop() {
 		}
 
 		var sleep time.Duration
+		c.drain = drainHint{} // a hint belongs to one socket
 		if err := c.connect(); err != nil {
 			if c.stopped() {
 				return // a dial cancelled or discarded by Stop is not a failure
@@ -578,9 +585,16 @@ func (c *Client) reconnectLoop() {
 			}
 
 			kind, code := classifyDisconnect(readErr, c.localClose.Swap(false))
-			sleep = backoff.afterDisconnect(kind, lasted)
-			log.Info("disconnected", "kind", kind.String(), "closeCode", code,
-				"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
+			if within, ok := c.takeDrainHint(); ok {
+				sleep = backoff.afterDrainedDisconnect(kind, lasted, within)
+				log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+					"connectedFor", lasted.Round(time.Second), "retryIn", sleep,
+					"drainWithin", within)
+			} else {
+				sleep = backoff.afterDisconnect(kind, lasted)
+				log.Info("disconnected", "kind", kind.String(), "closeCode", code,
+					"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
+			}
 		}
 
 		select {
@@ -684,6 +698,14 @@ func (c *Client) readPump() error {
 		// agents fall through to the id-less skip below and ignore them.
 		if msg.Type == "desktop_ice_candidate" {
 			c.handleDesktopICECandidateMessage(message)
+			continue
+		}
+
+		// A draining server's reconnect window (W09, #8148). Handled before
+		// the id-less skip (the #3001 trap), and before command dispatch so
+		// a drain frame is never run as a command. Agents before W09 skip it.
+		if msg.Type == "drain" {
+			c.handleDrainMessage(message)
 			continue
 		}
 
