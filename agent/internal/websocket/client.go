@@ -471,7 +471,7 @@ func (c *Client) buildWSURL() (string, error) {
 // reconnectBackoff. The step resets only after a connection that lasted past
 // stableConnectionThreshold.
 func (c *Client) reconnectLoop() {
-	backoff := newReconnectBackoff(nil)
+	backoff := newReconnectBackoff(wsRand)
 
 	for {
 		if c.stopped() {
@@ -493,7 +493,7 @@ func (c *Client) reconnectLoop() {
 			}
 
 			// Run read/write pumps — track how long the connection lasted
-			connStart := time.Now()
+			connStart := wsClock.Now()
 			pumpDone := make(chan struct{})
 			writerDone := make(chan struct{})
 			go c.writePump(pumpDone, writerDone)
@@ -501,7 +501,7 @@ func (c *Client) reconnectLoop() {
 			close(pumpDone)
 			<-writerDone
 			c.closeCurrentConn(false)
-			lasted := time.Since(connStart)
+			lasted := wsClock.Now().Sub(connStart)
 
 			if c.stopped() {
 				return
@@ -513,12 +513,10 @@ func (c *Client) reconnectLoop() {
 				"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
 		}
 
-		timer := time.NewTimer(sleep)
 		select {
 		case <-c.done:
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-wsClock.After(sleep):
 		}
 	}
 }
