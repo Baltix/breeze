@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	mathrand "math/rand"
@@ -91,7 +93,15 @@ type Config struct {
 	// this field existed, whenever the org's binding mode requires one). This
 	// is a known, accepted gap for already-enrolled fleets at rollout, not a
 	// bug in agents enrolled after this field landed.
-	DeviceID                     string `mapstructure:"device_id"`
+	DeviceID string `mapstructure:"device_id"`
+	// BootstrapTokenFingerprint is the SHA-256 (hex) of the MSI bootstrap token
+	// that enrolled this agent, or "" when enrollment did not go through a
+	// bootstrap token (manual `enroll`, Quick Support, pre-#9540 fleets). The
+	// MSI BootstrapEnroll custom action runs on upgrades too; this is how it
+	// tells "the original download ran again" (skip, spend nothing) from "a
+	// new installer was sent to this host" (re-enroll). Not a secret: the
+	// token expires within a day and only its digest is stored.
+	BootstrapTokenFingerprint    string `mapstructure:"bootstrap_token_fingerprint"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
 	ProcessSampleIntervalSeconds int    `mapstructure:"process_sample_interval_seconds"`
@@ -1004,6 +1014,7 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("site_id", siteID)
 	viper.Set("ownership_epoch", ownershipEpoch)
 	viper.Set("device_id", cfg.DeviceID)
+	viper.Set("bootstrap_token_fingerprint", cfg.BootstrapTokenFingerprint)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
@@ -1582,4 +1593,16 @@ func secretsFilePathFor(cfgFile string) string {
 		return filepath.Join(filepath.Dir(cfgFile), "secrets.yaml")
 	}
 	return filepath.Join(configDir(), "secrets.yaml")
+}
+
+// BootstrapTokenFingerprint is the value stored in Config.BootstrapTokenFingerprint
+// for a given raw bootstrap token. Case-sensitive on purpose: tokens are
+// case-sensitive, and a deploy tool that lowercased the installer file name
+// produced a different (mangled) token, not the one that enrolled this host.
+func BootstrapTokenFingerprint(token string) string {
+	if token == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

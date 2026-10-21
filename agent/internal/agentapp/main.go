@@ -1940,6 +1940,8 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		}
 	}
 
+	cfg.BootstrapTokenFingerprint = pendingBootstrapTokenFingerprint
+
 	if err := saveEnrollmentFn(cfg, cfgFile); err != nil {
 		return enrollSaveFailure(cfg, cfgFile, err)
 	}

@@ -1175,6 +1175,40 @@ func TestSaveToRoundTripsDeviceID(t *testing.T) {
 	}
 }
 
+// TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint pins the field the
+// MSI bootstrap path uses to tell "the same installer file ran again" (an
+// upgrade with the original download) from "a new installer was sent to this
+// host" (#9540). It is a hash of a 24h token, not a secret, so it lives in
+// agent.yaml like org_id/site_id.
+func TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint(t *testing.T) {
+	defer viper.Reset()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent.yaml")
+
+	cfg := Default()
+	cfg.AgentID = "ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776"
+	cfg.ServerURL = "https://api.example.test"
+	cfg.AuthToken = "brz_agent"
+	cfg.BootstrapTokenFingerprint = BootstrapTokenFingerprint("6ke9mdug56")
+
+	if err := SaveEnrollment(cfg, cfgPath); err != nil {
+		t.Fatalf("SaveEnrollment: %v", err)
+	}
+	loaded, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.BootstrapTokenFingerprint != cfg.BootstrapTokenFingerprint {
+		t.Errorf("BootstrapTokenFingerprint = %q, want %q", loaded.BootstrapTokenFingerprint, cfg.BootstrapTokenFingerprint)
+	}
+	if loaded.BootstrapTokenFingerprint == "" || strings.Contains(loaded.BootstrapTokenFingerprint, "6ke9mdug56") {
+		t.Errorf("fingerprint %q must be a digest, never the raw token", loaded.BootstrapTokenFingerprint)
+	}
+	if BootstrapTokenFingerprint("6KE9MDUG56") == cfg.BootstrapTokenFingerprint {
+		t.Error("fingerprint must be case-sensitive: tokens are case-sensitive and a lowercased filename is a different (mangled) token")
+	}
+}
+
 // TestSaveToRoundTripsRequireManifestSigningKeyID pins the agent-side rollout
 // control for exact-signing-key-ID verification. Without the viper.Set in
 // SaveTo the field silently reverts to false on the next save — i.e. an agent

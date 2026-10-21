@@ -96,26 +96,17 @@ func TestResolveBootstrapInputs(t *testing.T) {
 	}
 }
 
-// The MSI BootstrapEnroll CA runs on major upgrades too. An already-enrolled
-// agent must return before ANY HTTP redemption: the bootstrap token is
-// single-use, so a redeem-then-skip flow burns the customer's token (and an
-// already-redeemed filename token would 4xx → exit 1 → the deferred CA's
-// Return="check" rolls back the entire upgrade).
+// The MSI BootstrapEnroll CA runs on major upgrades too. Re-running the
+// installer file that enrolled this host (same bootstrap token) must return
+// before ANY HTTP redemption: the token's slots are finite, and an exhausted
+// filename token would 4xx. A DIFFERENT token is handled in
+// bootstrap_reenroll_test.go (#9540).
 func TestRunBootstrapSkipsRedeemWhenAlreadyEnrolled(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "agent.yaml")
-	// agent_id must be a VALID UUID: config.Load validates it and falls back
-	// to Default() (empty AgentID) on an invalid value — which correctly
-	// fails OPEN into enrollment, but would vacuously pass the wrong way here.
-	if err := os.WriteFile(cfgPath, []byte(
-		"agent_id: 0f0e0d0c-0b0a-4908-8706-050403020100\nlog_file: "+filepath.ToSlash(filepath.Join(dir, "agent.log"))+"\n",
-	), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	cfgPath := writeBootstrapEnrolledConfig(t, "TESTTOKEN1")
 
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1) // single-use token: any request here IS the bug
+		hits.Add(1) // any request here IS the bug
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
@@ -132,7 +123,7 @@ func TestRunBootstrapSkipsRedeemWhenAlreadyEnrolled(t *testing.T) {
 	runBootstrap()
 
 	if n := hits.Load(); n != 0 {
-		t.Fatalf("bootstrap endpoint contacted %d time(s) despite existing enrollment — single-use token would be burned on upgrade", n)
+		t.Fatalf("bootstrap endpoint contacted %d time(s) despite the same installer having enrolled this host — token slot would be spent on upgrade", n)
 	}
 }
 

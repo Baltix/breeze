@@ -264,23 +264,39 @@ func runBootstrap() {
 	initEnrollLogging(cfg, quietEnroll)
 	bsLog := logging.L("bootstrap")
 
-	// The MSI BootstrapEnroll CA runs on major upgrades too (NOT Installed is
-	// true for the new product). Bail out before redeeming: enrollDevice would
-	// skip anyway (same cfg.AgentID check), but by then redeemBootstrapToken
-	// has already consumed the SINGLE-USE bootstrap token for nothing and
-	// spent up to 30s on the redeem HTTP call inside a blocking deferred CA.
-	// Worse: upgrading with an MSI whose filename token was ALREADY redeemed
-	// (the original install's downloaded file, re-run later) makes the redeem
-	// 4xx and os.Exit(1) — Return="check" would roll back the whole upgrade.
-	if cfg.AgentID != "" {
-		bsLog.Info("agent already enrolled; skipping bootstrap", "agent_id", cfg.AgentID)
-		if !quietEnroll {
-			fmt.Println("Agent already enrolled; skipping bootstrap enrollment.")
+	token, server, err := resolveBootstrapInputs(bootstrapInstallData)
+
+	// The MSI BootstrapEnroll CA runs on major upgrades too, so an enrolled
+	// host is the common case here, not an error. Which installer is running
+	// decides what happens (#9540):
+	//
+	//   no usable token            → skip. A bare/renamed MSI over an enrolled
+	//                                agent is an upgrade; never fail it.
+	//   the token that enrolled    → skip, before ANY HTTP. The original
+	//   this host                    download re-ran (upgrade); redeeming
+	//                                would spend a slot of a finite token and,
+	//                                once exhausted, 4xx → exit 1 → the
+	//                                deferred CA's Return="check" rolls the
+	//                                whole upgrade back.
+	//   a different token          → an operator generated a new installer for
+	//                                this host and expects it to take effect.
+	//                                Redeem it and re-enroll (below). Fleets
+	//                                enrolled before the fingerprint existed
+	//                                land here too; their old file's token has
+	//                                long expired, which is the soft path.
+	alreadyEnrolled := cfg.AgentID != ""
+	if alreadyEnrolled {
+		if err != nil || config.BootstrapTokenFingerprint(token) == cfg.BootstrapTokenFingerprint {
+			bsLog.Info("agent already enrolled; skipping bootstrap", "agent_id", cfg.AgentID)
+			if !quietEnroll {
+				fmt.Println("Agent already enrolled; skipping bootstrap enrollment.")
+			}
+			return // exit 0 — upgrade over an enrolled agent must never burn the token
 		}
-		return // exit 0 — upgrade over an enrolled agent must never burn the token
+		bsLog.Info("agent already enrolled but this installer carries a different bootstrap token; re-enrolling",
+			"agent_id", cfg.AgentID)
 	}
 
-	token, server, err := resolveBootstrapInputs(bootstrapInstallData)
 	if errors.Is(err, errBootstrapInputUnusable) {
 		bsLog.Error("bootstrap refused: enrollment material present but unusable", "error", err.Error())
 		reportBootstrapFailure(fmt.Sprintf("Bootstrap failed: %v", err))
@@ -311,6 +327,17 @@ func runBootstrap() {
 
 	bsLog.Info("redeeming bootstrap token", "server", server)
 	res, err := redeemBootstrapToken(server, token)
+	if err != nil && alreadyEnrolled {
+		// A stale (expired / exhausted) token on an enrolled host is the
+		// "upgrade with an old download" shape, not a failed install: keep
+		// the enrollment that works and leave a durable trace for the
+		// operator who meant to re-enroll.
+		bsLog.Warn("bootstrap token redemption failed on an enrolled host; keeping the existing enrollment",
+			"agent_id", cfg.AgentID, "error", err.Error())
+		reportBootstrapUnenrolled(fmt.Sprintf("Breeze Agent kept its existing enrollment (%s): the installer's bootstrap token could not be redeemed (%v). "+
+			"To re-enroll this device, download a fresh installer and run it, or run: breeze-agent.exe enroll <key> --server <url> --force", cfg.AgentID, err))
+		return // exit 0 — soft
+	}
 	if err != nil {
 		bsLog.Error("bootstrap token redemption failed", "error", err.Error())
 		// For an untrusted server certificate, name the actual fix instead of
@@ -361,5 +388,24 @@ func runBootstrap() {
 	}
 	defer func() { cancelBootstrapOnEnrollFailure = nil }()
 
+	// Record which token enrolled this host so a re-run of this same
+	// installer (an upgrade) is recognised above, and let enrollDevice
+	// replace the existing identity when there is one. Both restored
+	// afterwards: production never returns from a failed enrollDevice
+	// (osExit), but tests and the no-op seam do.
+	pendingBootstrapTokenFingerprint = config.BootstrapTokenFingerprint(token)
+	origForce := forceEnroll
+	forceEnroll = forceEnroll || alreadyEnrolled
+	defer func() {
+		pendingBootstrapTokenFingerprint = ""
+		forceEnroll = origForce
+	}()
+
 	enrollDevice(res.EnrollmentKey)
 }
+
+// pendingBootstrapTokenFingerprint is set by runBootstrap for the duration of
+// its enrollDevice call; enrollWithConfig copies it into the config it saves.
+// Empty for every non-bootstrap enrollment, which clears a stale value from an
+// earlier bootstrap enrollment of the same host.
+var pendingBootstrapTokenFingerprint string
