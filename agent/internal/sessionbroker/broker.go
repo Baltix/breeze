@@ -1931,9 +1931,32 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	return result, nil
 }
 
+// ErrPamTargetedDismissUnsupported is returned, before anything is sent, when
+// the helper did not advertise targeted consent dismissal. It is definite: no
+// helper input can be in flight.
+var ErrPamTargetedDismissUnsupported = errors.New("PAM helper does not support targeted consent dismissal")
+
 // DismissPamConsent asks the SYSTEM PAM helper to dismiss the active Windows
 // consent process and waits for the correlated result.
 func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+	return b.dismissPamConsent(session, id, nil, timeout)
+}
+
+// DismissPamConsentInstance asks the SYSTEM PAM helper to dismiss exactly one
+// consent.exe process and leave every other UAC prompt alone (#8995). It
+// refuses helpers that did not advertise support: an older helper would ignore
+// the target and dismiss whichever prompt it found first.
+func (b *Broker) DismissPamConsentInstance(session *Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+	if !instance.Valid() {
+		return ipc.PamDismissConsentResult{}, fmt.Errorf("PAM consent instance requires both a PID and a creation time")
+	}
+	if session != nil && !session.SupportsTargetedPamDismiss {
+		return ipc.PamDismissConsentResult{}, ErrPamTargetedDismissUnsupported
+	}
+	return b.dismissPamConsent(session, id, &instance, timeout)
+}
+
+func (b *Broker) dismissPamConsent(session *Session, id string, instance *ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
 	var zero ipc.PamDismissConsentResult
 	if session == nil {
 		return zero, fmt.Errorf("nil PAM helper session")
@@ -1952,7 +1975,7 @@ func (b *Broker) DismissPamConsent(session *Session, id string, timeout time.Dur
 	resp, quiesced, err := session.sendCommandWithQuiescence(
 		id,
 		ipc.TypePamDismissConsent,
-		ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli()},
+		ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli(), Instance: instance},
 		timeout,
 	)
 	if err != nil {
@@ -2514,7 +2537,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
-	session.ConsentProtocolVersion = consentProtocolFromAuth(helperRole, authReq)
+	applyAuthAdvertisements(session, helperRole, authReq)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2922,6 +2945,20 @@ func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
 		return ipc.ConsentProtocolVersion
 	}
 	return v
+}
+
+// applyAuthAdvertisements records the optional protocol features a helper
+// advertised at auth onto its session. Set once, before the session is
+// registered, and never changed afterwards.
+func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.AuthRequest) {
+	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
+	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
+}
+
+// targetedPamDismissFromAuth reports whether the agent may send this helper a
+// targeted consent dismissal. Only SYSTEM helpers dismiss consent.exe at all.
+func targetedPamDismissFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) bool {
+	return role == ipc.HelperRoleSystem && authReq.SupportsTargetedPamDismiss
 }
 
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
