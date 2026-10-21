@@ -58,6 +58,11 @@ type Config struct {
 	AgentID   string
 	AuthToken *secmem.SecureString
 	TLSConfig *tls.Config
+	// FirstReconnectWindow bounds the spread of the redial after a stable
+	// socket the server closed (W09, #8148). nil means
+	// defaultFirstReconnectWindow (30 s); a value is clamped to [0, 300 s],
+	// and any value at or below 5 s gives #9145's 1–5 s spread.
+	FirstReconnectWindow *time.Duration
 }
 
 // Command represents a command received via WebSocket
@@ -236,6 +241,27 @@ type Client struct {
 	// server may ask for again with RESULT_PROCESSING_FAILED (#7365). See
 	// result_resend.go.
 	resends *sentResultTracker
+
+	// firstWindow and startWindow pace the reconnect loop (W09, #8148): the
+	// spread after a stable socket the server closed, and the wait before the
+	// first dial. Set in New; never mutated after Start.
+	firstWindow time.Duration
+	startWindow time.Duration
+
+	// connStartedAt is when connect() installed the current socket (wsClock).
+	// Written and read only on the reconnect-loop goroutine.
+	connStartedAt time.Time
+
+	// testHooks are nil in production; tests set them before Start.
+	testHooks clientTestHooks
+}
+
+// clientTestHooks are synchronisation points for the fake-clock tests.
+type clientTestHooks struct {
+	// connected receives (non-blocking) after connect installed a socket.
+	connected chan<- struct{}
+	// beforeInstall runs between a successful dial and the install.
+	beforeInstall func()
 }
 
 // RevocationLeaseMessage is the server's answer to a revocation-lease renewal.
@@ -264,7 +290,17 @@ type RevocationLeaseMessage struct {
 
 // New creates a new WebSocket client
 func New(cfg *Config, handler CommandHandler) *Client {
+	firstWindow := defaultFirstReconnectWindow
+	if cfg.FirstReconnectWindow != nil {
+		firstWindow = clampFirstReconnectWindow(*cfg.FirstReconnectWindow)
+		if firstWindow != *cfg.FirstReconnectWindow {
+			log.Warn("first reconnect window out of range; clamped",
+				"configured", *cfg.FirstReconnectWindow, "using", firstWindow)
+		}
+	}
 	return &Client{
+		firstWindow:     firstWindow,
+		startWindow:     defaultStartDialWindow,
 		config:          cfg,
 		cmdHandler:      handler,
 		done:            make(chan struct{}),
@@ -437,12 +473,31 @@ func (c *Client) connect() error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	if c.testHooks.beforeInstall != nil {
+		c.testHooks.beforeInstall()
+	}
+	// Install only if Stop has not run, checked in the same critical section
+	// Stop's closeCurrentConn takes: either Stop sees this socket and closes
+	// it, or this sees Stop and discards it. The loop's stopped() check after
+	// connect (#9245) stays as the second line of defence.
 	c.connMu.Lock()
+	if c.stopped() {
+		c.connMu.Unlock()
+		_ = conn.Close()
+		return context.Canceled
+	}
 	c.conn = conn
+	c.connStartedAt = wsClock.Now()
 	c.connMu.Unlock()
 
 	conn.SetReadLimit(maxMessageSize)
 	log.Info("connected", "server", c.serverURL())
+	if c.testHooks.connected != nil {
+		select {
+		case c.testHooks.connected <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -472,6 +527,18 @@ func (c *Client) buildWSURL() (string, error) {
 // stableConnectionThreshold.
 func (c *Client) reconnectLoop() {
 	backoff := newReconnectBackoff(wsRand)
+	backoff.firstWindow = c.firstWindow
+
+	// Spread the first dial of the process (W09, #8148): a fleet restarted
+	// together must not upgrade in the same second.
+	if d := backoff.atStart(c.startWindow); d > 0 {
+		log.Info("initial connect delayed", "delay", d)
+		select {
+		case <-c.done:
+			return
+		case <-wsClock.After(d):
+		}
+	}
 
 	for {
 		if c.stopped() {
@@ -480,6 +547,9 @@ func (c *Client) reconnectLoop() {
 
 		var sleep time.Duration
 		if err := c.connect(); err != nil {
+			if c.stopped() {
+				return // a dial cancelled or discarded by Stop is not a failure
+			}
 			sleep = backoff.afterDialFailure(err)
 			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)
 		} else {
@@ -493,7 +563,7 @@ func (c *Client) reconnectLoop() {
 			}
 
 			// Run read/write pumps — track how long the connection lasted
-			connStart := wsClock.Now()
+			connStart := c.connStartedAt
 			pumpDone := make(chan struct{})
 			writerDone := make(chan struct{})
 			go c.writePump(pumpDone, writerDone)
