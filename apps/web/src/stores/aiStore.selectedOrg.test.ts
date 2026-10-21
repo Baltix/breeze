@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../components/shared/Toast', () => ({ showToast: vi.fn() }));
 
 const orgState = vi.hoisted(() => ({ currentOrgId: null as string | null }));
 vi.mock('./orgStore', () => ({ useOrgStore: { getState: () => orgState } }));
@@ -97,5 +98,32 @@ describe('ai store createSession sends the header-selected org (#9529)', () => {
     await useAiStore.getState().createSession();
 
     expect(createBody()).toMatchObject({ orgId: ORG_B, delegantM365ConnectionId: 'conn-1' });
+  });
+
+  it('sends no orgId for a topology session: the server pins it to the site org (#6000)', async () => {
+    const topology = {
+      type: 'topology' as const,
+      siteId: '20000000-0000-4000-8000-000000000001',
+      subject: { kind: 'node' as const, id: '30000000-0000-4000-8000-000000000001' },
+      view: 'physical' as const,
+      graphRevision: '7',
+    };
+
+    await useAiStore.getState().createSession({ pageContext: topology });
+
+    expect(createBody()).toMatchObject({ pageContext: { type: 'topology' } });
+    expect(createBody()).not.toHaveProperty('orgId');
+  });
+
+  it('sends the selected org when sendMessage creates the session lazily', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) =>
+      url === '/ai/sessions'
+        ? makeResponse({ id: 'sess-1', orgId: ORG_B, delegantM365ConnectionId: null })
+        : makeResponse({}, false),
+    );
+
+    await useAiStore.getState().sendMessage('hello');
+
+    expect(createBody()).toMatchObject({ orgId: ORG_B });
   });
 });

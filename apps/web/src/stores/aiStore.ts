@@ -185,7 +185,10 @@ function resetModelPicker(): void {
   picker.reset();
   const pageContext = useAiStore.getState().pageContext;
   void readSelectedOrgId()
-    .catch(() => null)
+    .catch((err) => {
+      console.warn('[AiStore] Failed to read the selected org for the model menu:', err);
+      return null;
+    })
     .then((selectedOrgId) => picker.load({ orgId: noSessionOrgId(pageContext, selectedOrgId) }));
 }
 

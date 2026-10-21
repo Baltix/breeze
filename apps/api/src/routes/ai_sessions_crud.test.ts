@@ -367,6 +367,34 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(500);
     });
+
+    // #9529: the web sends the header-selected org as `orgId`. The route schema
+    // must keep the field (Zod strips unknown keys, which would silently drop
+    // the selection and send the session back to accessibleOrgIds[0]).
+    it('passes a body orgId through to createSession (#9529)', async () => {
+      const selectedOrg = 'bbbbbbbb-1111-4222-8333-444455556666';
+      vi.mocked(createSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: selectedOrg } as any);
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ orgId: selectedOrg, pageContext: { type: 'dashboard' } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(createSession).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ orgId: selectedOrg }));
+    });
+
+    it('rejects a non-uuid orgId at the schema boundary (#9529)', async () => {
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ orgId: 'not-a-uuid' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(createSession).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================

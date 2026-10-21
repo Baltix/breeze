@@ -9,8 +9,12 @@
  *
  * Order: customer/internal orgs before the hidden per-partner Quick Support
  * org (it holds no customer data and is absent from every org picker, so it
- * must never be anyone's default), then case-insensitive slug — the order the
- * `(partner_id, lower(slug))` index already returned in practice — then id.
+ * must never be anyone's default), then case-insensitive slug, then id.
+ * Slug keeps the default close to what callers saw before, when an index scan
+ * on `(partner_id, lower(slug))` usually produced the rows. It is compared by
+ * code point here, so it can differ from the database collation for slugs
+ * with punctuation; what matters is that it no longer changes between
+ * requests.
  *
  * Sorted in memory rather than with ORDER BY so the query keeps its exact
  * shape: a partner reaches tens to hundreds of orgs, not thousands.
