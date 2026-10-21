@@ -435,7 +435,9 @@ func (s *Shipper) shipLoop() {
 		select {
 		case <-s.stopChan:
 			// Drain remaining buffered entries. Deliberately ignores any
-			// Retry-After hold: shutdown ships what it can.
+			// Retry-After hold: shutdown ships what it can, retrying a
+			// transient failure with the short fixed backoff but never
+			// waiting out a long server Retry-After (see sleep).
 		drain:
 			for {
 				select {
@@ -506,8 +508,20 @@ func SetLoopRetryAfter(enabled bool) {
 	loopRetryAfterDisabled.Store(!enabled)
 }
 
+// shipDrainMaxRetryWait is the longest retry wait the shutdown drain still
+// sits through: the fixed backoff plus its jitter. A longer server
+// Retry-After is not waited out once Stop has run.
+const shipDrainMaxRetryWait = shipRetryBackoff + shipRetryBackoff/2
+
 // sleep waits d or until the shipper is stopped. It returns false if stopped.
+// Once stopped (the shutdown drain), a wait no longer than the fixed backoff
+// still runs, so the final flush rides out a transient failure as it did
+// before the waits became cancellable (W09, #8148).
 func (s *Shipper) sleep(d time.Duration) bool {
+	if d <= shipDrainMaxRetryWait {
+		<-shipperAfter(d) // short: bounded, and the same with or without Stop
+		return true
+	}
 	select {
 	case <-s.stopChan:
 		return false

@@ -27,9 +27,11 @@ const (
 	// closed at the same instant never re-dials at the same instant.
 	minReconnectDelay = 250 * time.Millisecond
 
-	// serverCloseSpreadMin/Max bound the uniform random wait after any
-	// server-initiated close. Abnormal closes wait the larger of this and the
-	// exponential step.
+	// serverCloseSpreadMin/Max bound the uniform random wait after a
+	// short-lived socket the server closed; abnormal closes wait the larger of
+	// this and the exponential step. After a stable socket the upper bound
+	// widens to the first-reconnect window (defaultFirstReconnectWindow), and
+	// serverCloseSpreadMax is also the narrowest drain spread (drain.go).
 	serverCloseSpreadMin = 1 * time.Second
 	serverCloseSpreadMax = 5 * time.Second
 

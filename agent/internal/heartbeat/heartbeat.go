@@ -1440,6 +1440,11 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// Clear a command's in-flight journal entry only once its result is
 		// queued or already in the outbox (#8296).
 		ws.OnResultHandedOff = h.onWSResultHandedOff
+		// W09: results of journaled commands go to the outbox while the
+		// socket is down; ephemeral ones keep buffering in memory.
+		ws.PersistResultWhileDisconnected = func(c websocket.Command) bool {
+			return journalable(Command{ID: c.ID, Type: c.Type})
+		}
 		// Revocation-lease answers from the control plane. This process owns the
 		// command socket, so it performs every renewal — including for sessions
 		// whose capture actually runs in a user helper, which is told to stop
@@ -2343,7 +2348,9 @@ func (h *Heartbeat) Start() {
 				if bootTime, err := host.BootTime(); err == nil && bootTime > 0 {
 					uptimeSec := now.Unix() - int64(bootTime)
 					bt := time.Unix(int64(bootTime), 0)
-					if h.bootCol.ShouldCollect(uptimeSec, bt) {
+					// W09: check the route before MarkCollected, or a deferred
+					// send would lose this boot's report for good.
+					if h.bootCol.ShouldCollect(uptimeSec, bt) && h.loopReady("POST", h.agentRouteURL("boot-performance")) {
 						h.bootCol.MarkCollected(bt)
 						go func() {
 							defer observability.Recoverer("heartbeat.bootPerformance")
@@ -2552,7 +2559,9 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 
 	url := h.monitoringResultsURL()
 	if !h.loopReady("PUT", url) {
-		return // point-in-time results: a deferred cycle drops them, as a shed would
+		// Point-in-time results: a deferred cycle drops them, as a shed would.
+		log.Info("monitoring results dropped: route deferred by server Retry-After", "count", len(results))
+		return
 	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},

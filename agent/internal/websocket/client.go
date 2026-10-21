@@ -220,6 +220,15 @@ type Client struct {
 	// lock.
 	OnResultHandedOff func(CommandResult)
 
+	// PersistResultWhileDisconnected, if set, reports whether a command's
+	// result must go to the outbox (OnResultWriteFailed) when it is produced
+	// while no socket is held (W09, #8148). The heartbeat answers true only
+	// for journaled, server-tracked commands; terminal, tunnel, desktop and
+	// monitor results keep buffering in memory, so a long reconnect window
+	// does not cost them a disk write each. nil keeps today's buffering.
+	// Set once before Start().
+	PersistResultWhileDisconnected func(Command) bool
+
 	// OnRevocationLease, if set, is invoked from the read pump when the server
 	// answers a revocation-lease renewal. `Revoked` is true for a
 	// `revocation_lease_revoked` frame (stop the session NOW).
@@ -1002,14 +1011,18 @@ func (c *Client) processCommand(cmd Command) {
 	result.CommandID = cmd.ID
 
 	// W09 (#8148, D11): with no socket held, a result queued in memory would
-	// wait out a reconnect window of up to 30 s (or a drain window) AFTER
-	// OnResultHandedOff cleared its journal entry, so a hard kill in between
-	// lost it. Persist it to the outbox first; the next OnConnected flush
-	// delivers it. If a socket came up while the outbox write ran, its flush
-	// may already have passed, so send directly too: the server tolerates a
-	// duplicate terminal result. Direct SendResult callers (tunnel, clipboard
-	// and desktop notices) keep buffering; they have no durable copy to lose.
-	if result.Status != "duplicate" && c.OnResultWriteFailed != nil && !c.IsConnected() && !c.stopped() {
+	// wait out the reconnect window (30 s by default, up to 300 s) or a drain
+	// window (up to 600 s) AFTER OnResultHandedOff cleared its journal entry,
+	// so a hard kill in between lost it. Persist it to the outbox first; the
+	// next OnConnected flush delivers it. If a socket came up while the outbox
+	// write ran, its flush may already have passed, so send directly too: the
+	// server tolerates a duplicate terminal result. Only commands the owner
+	// marks durable take this path (PersistResultWhileDisconnected); direct
+	// SendResult callers (tunnel, clipboard and desktop notices) keep
+	// buffering.
+	if result.Status != "duplicate" && c.OnResultWriteFailed != nil &&
+		c.PersistResultWhileDisconnected != nil && c.PersistResultWhileDisconnected(cmd) &&
+		!c.IsConnected() && !c.stopped() {
 		log.Info("command result held for reconnect; persisting to the outbox", "commandId", cmd.ID)
 		c.handleResultWriteFailure(result)
 		if c.IsConnected() {

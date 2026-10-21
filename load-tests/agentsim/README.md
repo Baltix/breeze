@@ -260,7 +260,7 @@ server close) or a drain hint. `drop-sockets` models a client-side network drop
 (no close frame, an abnormal close). `drain-sockets` (internal action,
 `withinMs` required) stands in for a draining API instance: it gives every live
 session a drain hint of `withinMs`, then closes each socket as a server going
-away (close code 1001). The drain sender is the API's (W5c); the simulator
+away (reported to the pacer as close code 1001; no close frame is sent). The drain sender is the API's (W5c); the simulator
 replaces it, so this measures the agent side only.
 
 ```bash

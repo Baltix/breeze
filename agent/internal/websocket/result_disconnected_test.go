@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +34,8 @@ func (o *orderRecorder) get() []string {
 func wireOutbox(c *Client, rec *orderRecorder) <-chan struct{} {
 	handedOff := make(chan struct{}, 4)
 	c.OnResultWriteFailed = func(r CommandResult) { rec.note("outbox:" + r.CommandID) }
+	// Durable unless the id says ephemeral (the heartbeat uses journalable).
+	c.PersistResultWhileDisconnected = func(cmd Command) bool { return !strings.HasPrefix(cmd.ID, "term-") }
 	c.OnResultHandedOff = func(r CommandResult) {
 		rec.note("handoff:" + r.CommandID)
 		handedOff <- struct{}{}
@@ -64,6 +67,52 @@ func TestResultWhileDisconnectedGoesToOutboxBeforeHandoff(t *testing.T) {
 	}
 	if n := len(c.resultChan); n != 0 {
 		t.Fatalf("result buffered in memory while disconnected (%d queued)", n)
+	}
+}
+
+func TestResultSentDirectlyIfSocketCameUpDuringOutboxWrite(t *testing.T) {
+	s := newScriptedWSServer(t, nil)
+	c := newTestClient(s.srv.URL, func(cmd Command) CommandResult {
+		return CommandResult{Status: "completed"}
+	})
+	rec := &orderRecorder{}
+	handedOff := wireOutbox(c, rec)
+	c.OnResultWriteFailed = func(r CommandResult) {
+		rec.note("outbox:" + r.CommandID)
+		if err := c.connect(); err != nil { // the reconnect lands mid-write
+			t.Errorf("connect: %v", err)
+		}
+	}
+	t.Cleanup(c.Stop)
+
+	c.processCommand(Command{ID: "cmd-up", Type: "run_script"})
+	awaitHandoff(t, handedOff)
+	s.next(t)
+	if want := []string{"outbox:cmd-up", "handoff:cmd-up"}; !slices.Equal(rec.get(), want) {
+		t.Fatalf("order = %v, want %v", rec.get(), want)
+	}
+	if n := len(c.resultChan); n != 1 {
+		t.Fatalf("queued = %d, want 1: a socket that came up during the outbox write must also get the result", n)
+	}
+	<-c.resultChan // keep the cleanup Stop's outbox drain from double-noting it
+}
+
+func TestEphemeralResultWhileDisconnectedStillBuffers(t *testing.T) {
+	// Terminal/tunnel/desktop/monitor results are not durable and far too
+	// frequent for a disk write each: they keep buffering in memory.
+	c := newTestClient("http://127.0.0.1:1", func(cmd Command) CommandResult {
+		return CommandResult{Status: "completed"}
+	})
+	rec := &orderRecorder{}
+	handedOff := wireOutbox(c, rec)
+
+	c.processCommand(Command{ID: "term-1", Type: "terminal_data"})
+	awaitHandoff(t, handedOff)
+	if want := []string{"handoff:term-1"}; !slices.Equal(rec.get(), want) {
+		t.Fatalf("order = %v, want %v (no outbox write)", rec.get(), want)
+	}
+	if n := len(c.resultChan); n != 1 {
+		t.Fatalf("queued = %d, want 1", n)
 	}
 }
 

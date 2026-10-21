@@ -49,8 +49,13 @@ func isRetryableStatus(code int) bool {
 //
 // When the server returns a retryable status (especially 429 or 503) with a
 // Retry-After header, the parsed value (clamped to ≤300s) is honored for the
-// next sleep instead of the internal exponential delay. This prevents fleets
-// of agents from steamrolling server-side rate limits.
+// next sleep instead of the internal exponential delay, with positive jitter.
+// This prevents fleets of agents from steamrolling server-side rate limits.
+//
+// W09 (#8148): when that jittered delay will not fit in ctx's deadline, Do
+// returns at once with the *RetryableStatusError, whose RetryAt (set while
+// loop-level Retry-After is on, see SetLoopRetryAfter) tells the caller's
+// loop when to call the route again.
 func Do(ctx context.Context, client *http.Client, method, url string, body []byte, headers http.Header, cfg RetryConfig) (*http.Response, error) {
 	var lastErr error
 	delay := cfg.InitialDelay
@@ -192,7 +197,8 @@ type RetryableStatusError struct {
 	StatusCode int
 	URL        string
 	// RetryAt is when the server allows the next call to this route: now plus
-	// its Retry-After with positive jitter, at most now + 300 s. Zero when the
+	// its Retry-After with positive jitter (ParseRetryAfter caps the header at
+	// 300 s, and the jitter is clamped back to it). Zero when the
 	// answer carried no usable Retry-After, or loop-level Retry-After is off
 	// (SetLoopRetryAfter). W09, #8148.
 	RetryAt time.Time

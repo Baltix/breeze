@@ -439,6 +439,7 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 						deps.logf("[unifi] collector %s: %v", cfg.CollectorID, err)
 						if at, ok := httputil.RetryAtFrom(err); ok {
 							notBefore[cfg.CollectorID] = at
+							deps.logf("[unifi] collector %s deferred by server Retry-After until %s", cfg.CollectorID, at.UTC().Format(time.RFC3339))
 						}
 					}
 				}
@@ -514,7 +515,8 @@ func (d CollectorDeps) random() float64 {
 const retryAfterMaxCap = 300 * time.Second
 
 // retryAfterJitterFraction spreads a fleet that was shed together across a
-// window: RetryAt = now + RA x (1 + 0.3*U), the same rule httputil applies.
+// window: RetryAt = now + RA x (1 + 0.3*U), matching httputil's default
+// JitterFrac.
 const retryAfterJitterFraction = 0.3
 
 // jitterRetryAfter returns ra x (1 + 0.3*rnd), never less than ra and never

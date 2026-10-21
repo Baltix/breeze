@@ -1,8 +1,10 @@
 package heartbeat
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -56,7 +58,7 @@ func scanHTTPDoCalls(t *testing.T) []doCall {
 		if err != nil {
 			t.Fatal(err)
 		}
-		af, err := parser.ParseFile(fset, f, src, 0)
+		af, err := parser.ParseFile(fset, f, src, 0) // no comments in the AST
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,8 +81,7 @@ func scanHTTPDoCalls(t *testing.T) []doCall {
 				return true
 			})
 			if found {
-				body := string(src[fset.Position(fd.Body.Pos()).Offset:fset.Position(fd.Body.End()).Offset])
-				out = append(out, doCall{file: f, fn: fd.Name.Name, body: body})
+				out = append(out, doCall{file: f, fn: fd.Name.Name, body: printNoComments(t, fset, fd.Body)})
 			}
 		}
 	}
@@ -95,10 +96,19 @@ func TestEveryAgentRouteCallIsGatedOrExempt(t *testing.T) {
 	seen := map[string]bool{}
 	for _, c := range calls {
 		seen[c.fn] = true
-		gated := strings.Contains(c.body, "loopReady(")
-		records := strings.Contains(c.body, "noteLoopAnswer(")
+		// Bodies are printed without comments, so a comment cannot satisfy
+		// these. The gate must be a negated branch before the first Do; the
+		// record must come after it.
+		gate := strings.Index(c.body, "!h.loopReady(")
+		do := strings.Index(c.body, "httputil.Do(")
+		rec := strings.LastIndex(c.body, "h.noteLoopAnswer(")
+		gated := gate >= 0 && gate < do
+		records := rec > do
+		if strings.Count(c.body, "httputil.Do(") > 1 {
+			t.Errorf("%s (%s) has more than one httputil.Do call; split it so each is gated", c.fn, c.file)
+		}
 		if reason, exempt := loopDeferralExempt[c.fn]; exempt {
-			if gated || records {
+			if strings.Contains(c.body, "loopReady(") || strings.Contains(c.body, "noteLoopAnswer(") {
 				t.Errorf("%s (%s) is exempt (%s) but touches the loop deferral", c.fn, c.file, reason)
 			}
 			continue
@@ -123,31 +133,37 @@ func TestEveryAgentRouteCallIsGatedOrExempt(t *testing.T) {
 // Senders that collect, pop or claim state before they send must check the
 // gate FIRST, or a deferred cycle loses what it collected (D5).
 func TestCollectBeforeSendSendersGateFirst(t *testing.T) {
-	src, err := os.ReadFile("heartbeat.go")
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, "heartbeat.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(src)
+	funcs := map[string]string{}
+	var whole bytes.Buffer
+	for _, decl := range af.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Body != nil {
+			body := printNoComments(t, fset, fd.Body)
+			funcs[fd.Name.Name] = body
+			whole.WriteString(body)
+		}
+	}
+	s := whole.String()
 	cases := []struct {
 		fn, before string
 	}{
-		{"func (h *Heartbeat) sendEventLogs()", "h.eventLogCol.Collect"},
-		{"func (h *Heartbeat) sendRecoveryKeys()", "h.pendingRecoveryKeys = nil"},
-		{"func (h *Heartbeat) sendReliabilityMetrics(", "h.reliabilityCol.Collect"},
-		{"func (h *Heartbeat) sendProcessSample()", "tools.TopProcessSample"},
-		{"func (h *Heartbeat) sendInventoryData(", "json.Marshal"},
+		{"sendEventLogs", "h.eventLogCol.Collect"},
+		{"sendRecoveryKeys", "h.pendingRecoveryKeys = nil"},
+		{"sendReliabilityMetrics", "h.reliabilityCol.Collect"},
+		{"sendProcessSample", "tools.TopProcessSample"},
+		{"sendInventoryData", "json.Marshal"},
 	}
 	for _, tc := range cases {
-		start := strings.Index(s, tc.fn)
-		if start < 0 {
+		body, ok := funcs[tc.fn]
+		if !ok {
 			t.Errorf("%s not found", tc.fn)
 			continue
 		}
-		body := s[start:]
-		if end := strings.Index(body[1:], "\nfunc "); end > 0 {
-			body = body[:end+1]
-		}
-		gate, act := strings.Index(body, "loopReady("), strings.Index(body, tc.before)
+		gate, act := strings.Index(body, "!h.loopReady("), strings.Index(body, tc.before)
 		if gate < 0 || act < 0 || gate > act {
 			t.Errorf("%s: loopReady at %d must come before %q at %d", tc.fn, gate, tc.before, act)
 		}
@@ -157,4 +173,20 @@ func TestCollectBeforeSendSendersGateFirst(t *testing.T) {
 	if !strings.Contains(s, "shouldSendPatch := patchRouteReady && h.claimPatchScanLocked(") {
 		t.Error("patch scan claim is not gated by the patches/pending route")
 	}
+	// Boot performance is collected once per boot (MarkCollected), so the
+	// route must be checked before the mark.
+	if !strings.Contains(s, `h.bootCol.ShouldCollect(uptimeSec, bt) && h.loopReady("POST", h.agentRouteURL("boot-performance"))`) {
+		t.Error("boot-performance collection is not gated before MarkCollected")
+	}
+}
+
+// printNoComments renders a node from an AST parsed without comments, so
+// source scans cannot be satisfied by a comment.
+func printNoComments(t *testing.T, fset *token.FileSet, n ast.Node) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := printer.Fprint(&b, fset, n); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
 }
