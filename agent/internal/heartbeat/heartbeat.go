@@ -506,18 +506,21 @@ type Heartbeat struct {
 	// commandJournal records, on disk, which server-tracked commands are
 	// executing, so a restart can report one that died with no result as
 	// failed instead of leaving its row in `sent` until the reaper (#8296).
-	commandJournal        *commandJournal
-	mu                    sync.Mutex
-	lastInventoryUpdate   time.Time
-	lastEventLogUpdate    time.Time
-	lastSecurityUpdate    time.Time
-	lastRecoveryKeysFP    string
-	pendingRecoveryKeys   []security.RecoveryKey
-	lastSessionUpdate     time.Time
-	lastPostureUpdate     time.Time
-	lastReliabilityUpdate time.Time
-	lastHardwareUpdate    time.Time // stamped at startup; gate then re-runs every 24 h
-	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
+	commandJournal      *commandJournal
+	mu                  sync.Mutex
+	lastInventoryUpdate time.Time
+	lastEventLogUpdate  time.Time
+	lastSecurityUpdate  time.Time
+	lastRecoveryKeysFP  string
+	// lastRecoveryKeysCollect is when the security tick last read the
+	// recovery protectors; see recoveryKeyCollectInterval.
+	lastRecoveryKeysCollect time.Time
+	pendingRecoveryKeys     []security.RecoveryKey
+	lastSessionUpdate       time.Time
+	lastPostureUpdate       time.Time
+	lastReliabilityUpdate   time.Time
+	lastHardwareUpdate      time.Time // stamped at startup; gate then re-runs every 24 h
+	lastPatchUpdate         time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
 	// Hardware health (RAID/disk) collection state. hwContext/hwCancel bound
 	// in-flight collect/upload work so shutdown can cancel it; hwStarted /
 	// hwRunning / hwStopping / hwDisabled* gate dispatch (see hardware_health.go).
@@ -2398,7 +2401,7 @@ func (h *Heartbeat) Start() {
 			}
 			// Send security status every 5 minutes
 			if shouldSendSecurity {
-				go h.sendSecurityStatus()
+				go h.sendSecurityStatus(false)
 				go h.sendRecoveryKeys()
 			}
 			if shouldSendSessions {
@@ -4348,8 +4351,15 @@ func (h *Heartbeat) sendEventLogs() {
 	h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
 }
 
-func (h *Heartbeat) sendSecurityStatus() {
-	status, err := security.CollectStatus(h.config)
+// sendSecurityStatus uploads security posture. The 5-minute tick passes
+// fresh=false (slow Windows probes served from cache, #9267); an explicit
+// technician request (Refresh Inventory) passes fresh=true.
+func (h *Heartbeat) sendSecurityStatus(fresh bool) {
+	collect := security.CollectStatus
+	if fresh {
+		collect = security.CollectStatusFresh
+	}
+	status, err := collect(h.config)
 	if err != nil {
 		log.Warn("security status collection warning", "error", err.Error())
 	}
@@ -4359,8 +4369,9 @@ func (h *Heartbeat) sendSecurityStatus() {
 
 // sendRecoveryKeys escrows the device's BitLocker recovery keys. Runs on the
 // security tick but only transmits when the key set changed (fingerprint
-// gate) — recovery keys should not transit the wire every 5 minutes. Also
-// drains rotation results whose upload previously failed.
+// gate) — recovery keys should not transit the wire every 5 minutes — and only
+// re-reads the protectors every recoveryKeyCollectInterval (#9267). Drains
+// rotation results whose upload previously failed on every tick.
 func (h *Heartbeat) sendRecoveryKeys() {
 	h.mu.Lock()
 	pending := h.pendingRecoveryKeys
@@ -4379,8 +4390,27 @@ func (h *Heartbeat) sendRecoveryKeys() {
 		}
 	}
 
-	keys, err := security.CollectRecoveryKeys()
+	now := time.Now()
+	h.mu.Lock()
+	due := h.lastRecoveryKeysCollect.IsZero() || now.Sub(h.lastRecoveryKeysCollect) >= recoveryKeyCollectInterval
+	if due {
+		// Stamped before the read so a failing read (no BitLocker module,
+		// PowerShell timeout) is retried after the interval, not every tick.
+		h.lastRecoveryKeysCollect = now
+	}
+	h.mu.Unlock()
+	if !due {
+		return
+	}
+
+	keys, err := collectRecoveryKeys()
 	if err != nil {
+		// Retry sooner than the full interval: the common transient cause is a
+		// PowerShell cold start after boot hitting its timeout, and a newly
+		// BitLocker-enabled volume should not wait half an hour for escrow.
+		h.mu.Lock()
+		h.lastRecoveryKeysCollect = now.Add(recoveryKeyErrorRetry - recoveryKeyCollectInterval)
+		h.mu.Unlock()
 		log.Warn("recovery key collection failed", "error", err.Error())
 		return
 	}
@@ -4392,6 +4422,13 @@ func (h *Heartbeat) sendRecoveryKeys() {
 		return
 	}
 	if err := h.pushRecoveryKeys("snapshot", keys); err != nil {
+		// Not escrowed: re-read and retry after recoveryKeyErrorRetry rather
+		// than the full interval. Not on the very next tick — a server outage
+		// or a persistent rejection would otherwise put the PowerShell read
+		// back on every 5-minute tick fleet-wide.
+		h.mu.Lock()
+		h.lastRecoveryKeysCollect = now.Add(recoveryKeyErrorRetry - recoveryKeyCollectInterval)
+		h.mu.Unlock()
 		return
 	}
 	h.mu.Lock()
