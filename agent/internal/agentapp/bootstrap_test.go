@@ -96,36 +96,6 @@ func TestResolveBootstrapInputs(t *testing.T) {
 	}
 }
 
-// The MSI BootstrapEnroll CA runs on major upgrades too. Re-running the
-// installer file that enrolled this host (same bootstrap token) must return
-// before ANY HTTP redemption: the token's slots are finite, and an exhausted
-// filename token would 4xx. A DIFFERENT token is handled in
-// bootstrap_reenroll_test.go (#9540).
-func TestRunBootstrapSkipsRedeemWhenAlreadyEnrolled(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1) // any request here IS the bug
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-	cfgPath := writeBootstrapEnrolledConfig(t, "TESTTOKEN1", srv.URL)
-
-	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
-	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
-	cfgFile, quietEnroll = cfgPath, true
-	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
-
-	origExit := osExit
-	osExit = func(code int) { panic(fmt.Sprintf("unexpected exit %d", code)) }
-	t.Cleanup(func() { osExit = origExit })
-
-	runBootstrap()
-
-	if n := hits.Load(); n != 0 {
-		t.Fatalf("bootstrap endpoint contacted %d time(s) despite the same installer having enrolled this host — token slot would be spent on upgrade", n)
-	}
-}
-
 func TestRedeemBootstrapToken(t *testing.T) {
 	var gotToken string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -434,12 +404,20 @@ func TestRunBootstrapDoesNotTreatASetAsideConfigAsEnrolled(t *testing.T) {
 	}
 	origExit := osExit
 	t.Cleanup(func() { osExit = origExit })
-	osExit = func(int) {} // the test server refuses the token
+	exitCode := -1
+	osExit = func(c int) { exitCode = c } // the test server refuses the token
 
 	runBootstrap()
 
 	if n := hits.Load(); n != 1 {
 		t.Fatalf("bootstrap endpoint contacted %d times, want 1: the planted agent_id was taken as an enrollment", n)
+	}
+	// A refused token on a NOT-enrolled host is a hard failure (exit 1). An
+	// enrolled host would keep its enrollment and never exit — which is how
+	// this test would silently pass if the planted agent_id were honoured
+	// (#9540 added that soft path).
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1: the planted agent_id was taken as an enrollment", exitCode)
 	}
 }
 

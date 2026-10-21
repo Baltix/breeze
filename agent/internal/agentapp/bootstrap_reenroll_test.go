@@ -171,8 +171,50 @@ func TestRunBootstrap_NewTokenRedeemSuccessReenrolls(t *testing.T) {
 	if want := config.BootstrapTokenFingerprint("NEWTOKEN01"); cfg.BootstrapTokenFingerprint != want {
 		t.Fatalf("bootstrap_token_fingerprint = %q, want %q so a re-run of this same installer skips", cfg.BootstrapTokenFingerprint, want)
 	}
-	if forceEnroll {
-		t.Fatal("forceEnroll global leaked out of runBootstrap")
+	if forceEnroll || pendingBootstrapTokenFingerprint != "" {
+		t.Fatalf("globals leaked out of runBootstrap: forceEnroll=%v pending=%q", forceEnroll, pendingBootstrapTokenFingerprint)
+	}
+}
+
+// Redeem succeeds but the server rejects the enrollment (device limit,
+// quarantine, key race): the old hard-fail semantics stand — the MSI rolls
+// back, the slot is refunded by the cancel hook, and the existing
+// enrollment on disk is untouched because SaveEnrollment only runs on
+// success.
+func TestRunBootstrap_NewTokenEnrollRejectionLeavesExistingEnrollmentAndFailsHard(t *testing.T) {
+	var cancelled atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverUrl":"","enrollmentKey":"child-key-abc","enrollmentSecret":"","siteId":"site1"}`))
+	})
+	mux.HandleFunc("/api/v1/agents/enroll", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Device limit reached","code":"DEVICE_LIMIT_REACHED"}`))
+	})
+	mux.HandleFunc("/api/v1/installer/bootstrap/cancel", func(w http.ResponseWriter, r *http.Request) {
+		cancelled.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"refunded":true}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cfgPath := writeBootstrapEnrolledConfig(t, "OLDTOKEN00", srv.URL)
+	code, _, _, _ := bootstrapSinks(t, cfgPath, `C:\dl\breeze-agent.msi|NEWTOKEN01|`+srv.URL)
+
+	runBootstrapRecovering()
+
+	if *code <= 0 {
+		t.Fatalf("exit code = %d, want non-zero (operator meant to re-enroll and it was refused)", *code)
+	}
+	if got := loadAgentID(t, cfgPath); got != existingAgentID {
+		t.Fatalf("agent_id = %q, want untouched %q", got, existingAgentID)
+	}
+	if cancelled.Load() == 0 {
+		t.Fatal("bootstrap slot was not refunded after the definitive 4xx")
+	}
+	if forceEnroll || pendingBootstrapTokenFingerprint != "" || cancelBootstrapOnEnrollFailure != nil {
+		t.Fatal("globals leaked out of runBootstrap on the failure path")
 	}
 }
 

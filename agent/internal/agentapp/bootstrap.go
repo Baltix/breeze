@@ -283,8 +283,12 @@ func runBootstrap() {
 	//                                this host and expects it to take effect.
 	//                                Redeem it and re-enroll (below). Fleets
 	//                                enrolled before the fingerprint existed
-	//                                land here too; their old file's token has
-	//                                long expired, which is the soft path.
+	//                                land here too: a re-run of their original
+	//                                file within the token's 7–30 day life
+	//                                re-enrolls once (in place, see #1028) and
+	//                                records the fingerprint; after expiry it
+	//                                is the soft path. Deliberate: excluding
+	//                                them would exclude every deployed agent.
 	alreadyEnrolled := cfg.AgentID != ""
 	if alreadyEnrolled {
 		if err != nil || config.BootstrapTokenFingerprint(token) == cfg.BootstrapTokenFingerprint {
@@ -446,6 +450,6 @@ func sameControlPlane(a, b string) bool {
 
 // pendingBootstrapTokenFingerprint is set by runBootstrap for the duration of
 // its enrollDevice call; enrollWithConfig copies it into the config it saves.
-// Empty for every non-bootstrap enrollment, which clears a stale value from an
-// earlier bootstrap enrollment of the same host.
+// Empty for every non-bootstrap enrollment, which leaves the previous value
+// untouched.
 var pendingBootstrapTokenFingerprint string

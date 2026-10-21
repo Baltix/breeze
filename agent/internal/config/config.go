@@ -95,12 +95,14 @@ type Config struct {
 	// bug in agents enrolled after this field landed.
 	DeviceID string `mapstructure:"device_id"`
 	// BootstrapTokenFingerprint is the SHA-256 (hex) of the MSI bootstrap token
-	// that enrolled this agent, or "" when enrollment did not go through a
-	// bootstrap token (manual `enroll`, Quick Support, pre-#9540 fleets). The
-	// MSI BootstrapEnroll custom action runs on upgrades too; this is how it
-	// tells "the original download ran again" (skip, spend nothing) from "a
-	// new installer was sent to this host" (re-enroll). Not a secret: the
-	// token expires within a day and only its digest is stored.
+	// that last enrolled this agent, or "" when no bootstrap token ever did
+	// (manual `enroll`, pre-#9540 fleets). The MSI BootstrapEnroll custom
+	// action runs on upgrades too; this is how it tells "the original
+	// download ran again" (skip, spend nothing) from "a new installer was
+	// sent to this host" (re-enroll). Lives in secrets.yaml (isSecretYAMLKey):
+	// the token is only ~52 bits, lives 7–30 days and may have uses left, so
+	// an unsalted digest in world-readable agent.yaml would be brute-forceable
+	// offline by any local user.
 	BootstrapTokenFingerprint    string `mapstructure:"bootstrap_token_fingerprint"`
 	HeartbeatIntervalSeconds     int    `mapstructure:"heartbeat_interval_seconds"`
 	MetricsIntervalSeconds       int    `mapstructure:"metrics_interval_seconds"`
@@ -578,6 +580,9 @@ func loadLocked(cfgFile string) (*Config, error) {
 		if v := sv.GetString("pending_helper_auth_token"); v != "" {
 			cfg.PendingHelperAuthToken = v
 		}
+		if v := sv.GetString("bootstrap_token_fingerprint"); v != "" {
+			cfg.BootstrapTokenFingerprint = v
+		}
 		if v := sv.GetString("mtls_cert_pem"); v != "" {
 			cfg.MtlsCertPEM = v
 		}
@@ -1014,7 +1019,6 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("site_id", siteID)
 	viper.Set("ownership_epoch", ownershipEpoch)
 	viper.Set("device_id", cfg.DeviceID)
-	viper.Set("bootstrap_token_fingerprint", cfg.BootstrapTokenFingerprint)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
@@ -1117,6 +1121,12 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	}
 	if cfg.BackupS3SecretKey != "" {
 		sv.Set("backup_s3_secret_key", cfg.BackupS3SecretKey)
+	}
+	// #9540 — digest of the bootstrap token that last enrolled this host.
+	// Load reads it back into cfg, so every later SaveTo carries it forward;
+	// non-empty only, like the S3 keys.
+	if cfg.BootstrapTokenFingerprint != "" {
+		sv.Set("bootstrap_token_fingerprint", cfg.BootstrapTokenFingerprint)
 	}
 
 	// Same atomic-write pattern for the secrets file (0600).
@@ -1295,7 +1305,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 // token an older agent left in agent.yaml.
 func isSecretYAMLKey(key string) bool {
 	switch key {
-	case "auth_token", "watchdog_auth_token",
+	case "auth_token", "watchdog_auth_token", "bootstrap_token_fingerprint",
 		"mtls_cert_pem", "mtls_key_pem", "mtls_cert_expires",
 		"pending_mtls_certificate", "pending_mtls_private_key",
 		"pending_mtls_certificate_id", "pending_mtls_expires_at":

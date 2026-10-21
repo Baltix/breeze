@@ -1940,7 +1940,12 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		}
 	}
 
-	cfg.BootstrapTokenFingerprint = pendingBootstrapTokenFingerprint
+	// Remember the last bootstrap token that acted on this host. A manual
+	// `enroll --force` leaves the previous value in place on purpose: a
+	// re-run of the old installer must still be recognised and skipped.
+	if pendingBootstrapTokenFingerprint != "" {
+		cfg.BootstrapTokenFingerprint = pendingBootstrapTokenFingerprint
+	}
 
 	if err := saveEnrollmentFn(cfg, cfgFile); err != nil {
 		return enrollSaveFailure(cfg, cfgFile, err)

@@ -753,6 +753,9 @@ func TestIsSecretYAMLKey(t *testing.T) {
 		"mtls_cert_pem":       true,
 		"mtls_key_pem":        true,
 		"mtls_cert_expires":   true,
+		// #9540: a digest of a short, multi-use, 7–30 day token — brute-forceable
+		// offline from a world-readable file, so it is secrets-only.
+		"bootstrap_token_fingerprint": true,
 		// Caught by suffix rules (_access_key, _secret_key).
 		"backup_s3_access_key": true,
 		"backup_s3_secret_key": true,
@@ -1178,8 +1181,8 @@ func TestSaveToRoundTripsDeviceID(t *testing.T) {
 // TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint pins the field the
 // MSI bootstrap path uses to tell "the same installer file ran again" (an
 // upgrade with the original download) from "a new installer was sent to this
-// host" (#9540). It is a hash of a 24h token, not a secret, so it lives in
-// agent.yaml like org_id/site_id.
+// host" (#9540). It is a digest of a short-lived but brute-forceable token, so
+// it round-trips through secrets.yaml, never agent.yaml.
 func TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint(t *testing.T) {
 	defer viper.Reset()
 	dir := t.TempDir()
@@ -1203,6 +1206,20 @@ func TestSaveEnrollmentRoundTripsBootstrapTokenFingerprint(t *testing.T) {
 	}
 	if loaded.BootstrapTokenFingerprint == "" || strings.Contains(loaded.BootstrapTokenFingerprint, "6ke9mdug56") {
 		t.Errorf("fingerprint %q must be a digest, never the raw token", loaded.BootstrapTokenFingerprint)
+	}
+	agentYAML, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(agentYAML), cfg.BootstrapTokenFingerprint) {
+		t.Error("fingerprint must not land in world-readable agent.yaml (offline brute force of a ~52-bit, multi-use token)")
+	}
+	secretsYAML, err := os.ReadFile(filepath.Join(dir, "secrets.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(secretsYAML), cfg.BootstrapTokenFingerprint) {
+		t.Error("fingerprint must be written to secrets.yaml")
 	}
 	if BootstrapTokenFingerprint("6KE9MDUG56") == cfg.BootstrapTokenFingerprint {
 		t.Error("fingerprint must be case-sensitive: tokens are case-sensitive and a lowercased filename is a different (mangled) token")
