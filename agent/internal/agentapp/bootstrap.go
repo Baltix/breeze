@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -293,6 +294,17 @@ func runBootstrap() {
 			}
 			return // exit 0 — upgrade over an enrolled agent must never burn the token
 		}
+		// Only the control plane this agent already talks to may re-enroll
+		// it. enrollWithConfig presents the current bearer as the
+		// re-enrollment token (#1028, so the server re-enrolls the existing
+		// row in place); handing that to another server would disclose it,
+		// and an installer for another server on an enrolled box is a mixed-
+		// up deploy share, not a move. Checked before the redeem so the
+		// mismatched token's slot is not spent either.
+		if !sameControlPlane(server, cfg.ServerURL) {
+			keepExistingEnrollment(bsLog, cfg, fmt.Sprintf("the installer is for a different server (%s) than this agent is enrolled with (%s)", server, cfg.ServerURL))
+			return // exit 0 — soft
+		}
 		bsLog.Info("agent already enrolled but this installer carries a different bootstrap token; re-enrolling",
 			"agent_id", cfg.AgentID)
 	}
@@ -332,10 +344,7 @@ func runBootstrap() {
 		// "upgrade with an old download" shape, not a failed install: keep
 		// the enrollment that works and leave a durable trace for the
 		// operator who meant to re-enroll.
-		bsLog.Warn("bootstrap token redemption failed on an enrolled host; keeping the existing enrollment",
-			"agent_id", cfg.AgentID, "error", err.Error())
-		reportBootstrapUnenrolled(fmt.Sprintf("Breeze Agent kept its existing enrollment (%s): the installer's bootstrap token could not be redeemed (%v). "+
-			"To re-enroll this device, download a fresh installer and run it, or run: breeze-agent.exe enroll <key> --server <url> --force", cfg.AgentID, err))
+		keepExistingEnrollment(bsLog, cfg, fmt.Sprintf("the installer's bootstrap token could not be redeemed (%v)", err))
 		return // exit 0 — soft
 	}
 	if err != nil {
@@ -356,6 +365,12 @@ func runBootstrap() {
 		reportBootstrapFailure(fmt.Sprintf("Bootstrap failed: %v", err))
 		osExit(1) // hard — roll back; do not adopt a non-allowlisted redirect
 		return
+	}
+	if alreadyEnrolled && !sameControlPlane(res.ServerURL, cfg.ServerURL) {
+		// The redeem response may re-point the agent; the same rule as the
+		// pre-redeem check applies to where the enrollment would be sent.
+		keepExistingEnrollment(bsLog, cfg, fmt.Sprintf("the redeemed token points at a different server (%s) than this agent is enrolled with (%s)", res.ServerURL, cfg.ServerURL))
+		return // exit 0 — soft
 	}
 
 	// Hand off to the existing enroll path via the package globals it reads.
@@ -402,6 +417,31 @@ func runBootstrap() {
 	}()
 
 	enrollDevice(res.EnrollmentKey)
+}
+
+// keepExistingEnrollment is the soft outcome for an enrolled host whose
+// installer cannot re-enroll it: warn in every durable sink, name the
+// override, and let the install (usually an upgrade) finish with exit 0.
+func keepExistingEnrollment(bsLog *slog.Logger, cfg *config.Config, why string) {
+	bsLog.Warn("keeping the existing enrollment", "agent_id", cfg.AgentID, "reason", why)
+	reportBootstrapUnenrolled(fmt.Sprintf("Breeze Agent kept its existing enrollment (%s): %s. "+
+		"To re-enroll this device, download a fresh installer from the same Breeze server and run it, "+
+		"or run: breeze-agent.exe enroll <key> --server <url> --force", cfg.AgentID, why))
+}
+
+// sameControlPlane reports whether two server URLs name the same origin
+// (scheme + host[:port], case-insensitive). Paths and trailing slashes are
+// ignored; an unparseable side never matches.
+func sameControlPlane(a, b string) bool {
+	origin := func(raw string) string {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return ""
+		}
+		return strings.ToLower(u.Scheme + "://" + u.Host)
+	}
+	oa, ob := origin(a), origin(b)
+	return oa != "" && oa == ob
 }
 
 // pendingBootstrapTokenFingerprint is set by runBootstrap for the duration of

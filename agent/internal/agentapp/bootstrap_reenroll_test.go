@@ -29,13 +29,13 @@ const existingAgentID = "0f0e0d0c-0b0a-4908-8706-050403020100"
 
 // writeEnrolledConfig plants an enrolled agent.yaml (+ the fingerprint of the
 // token that enrolled it, when non-empty) and points runBootstrap at it.
-func writeBootstrapEnrolledConfig(t *testing.T, enrolledWithToken string) string {
+func writeBootstrapEnrolledConfig(t *testing.T, enrolledWithToken, serverURL string) string {
 	t.Helper()
 	viper.Reset()
 	t.Cleanup(viper.Reset)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")
-	body := "agent_id: " + existingAgentID + "\nlog_file: " + filepath.ToSlash(filepath.Join(dir, "agent.log")) + "\n"
+	body := "agent_id: " + existingAgentID + "\nserver_url: " + serverURL + "\nlog_file: " + filepath.ToSlash(filepath.Join(dir, "agent.log")) + "\n"
 	if enrolledWithToken != "" {
 		body += "bootstrap_token_fingerprint: " + config.BootstrapTokenFingerprint(enrolledWithToken) + "\n"
 	}
@@ -79,13 +79,13 @@ func loadAgentID(t *testing.T, cfgPath string) string {
 }
 
 func TestRunBootstrap_SameTokenOnEnrolledHostSkipsWithoutHTTP(t *testing.T) {
-	cfgPath := writeBootstrapEnrolledConfig(t, "TESTTOKEN1")
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
+	cfgPath := writeBootstrapEnrolledConfig(t, "TESTTOKEN1", srv.URL)
 	code, _, _, _ := bootstrapSinks(t, cfgPath, `C:\dl\breeze-agent.msi|TESTTOKEN1|`+srv.URL)
 
 	runBootstrapRecovering()
@@ -104,13 +104,13 @@ func TestRunBootstrap_SameTokenOnEnrolledHostSkipsWithoutHTTP(t *testing.T) {
 func TestRunBootstrap_NewTokenRedeemFailureKeepsExistingEnrollment(t *testing.T) {
 	for _, stored := range []string{"OLDTOKEN00", "" /* fleet enrolled before the fingerprint existed */} {
 		t.Run(fmt.Sprintf("stored=%q", stored), func(t *testing.T) {
-			cfgPath := writeBootstrapEnrolledConfig(t, stored)
 			var hits atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				hits.Add(1)
 				w.WriteHeader(http.StatusNotFound) // expired / exhausted token
 			}))
 			defer srv.Close()
+			cfgPath := writeBootstrapEnrolledConfig(t, stored, srv.URL)
 			code, lastErr, evErr, evWarn := bootstrapSinks(t, cfgPath, `C:\dl\breeze-agent.msi|NEWTOKEN01|`+srv.URL)
 
 			runBootstrapRecovering()
@@ -135,7 +135,6 @@ func TestRunBootstrap_NewTokenRedeemFailureKeepsExistingEnrollment(t *testing.T)
 }
 
 func TestRunBootstrap_NewTokenRedeemSuccessReenrolls(t *testing.T) {
-	cfgPath := writeBootstrapEnrolledConfig(t, "OLDTOKEN00")
 	var redeemed string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +149,7 @@ func TestRunBootstrap_NewTokenRedeemSuccessReenrolls(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	cfgPath := writeBootstrapEnrolledConfig(t, "OLDTOKEN00", srv.URL)
 	code, _, evErr, _ := bootstrapSinks(t, cfgPath, `C:\dl\breeze-agent.msi|NEWTOKEN01|`+srv.URL)
 
 	runBootstrapRecovering()
@@ -173,5 +173,83 @@ func TestRunBootstrap_NewTokenRedeemSuccessReenrolls(t *testing.T) {
 	}
 	if forceEnroll {
 		t.Fatal("forceEnroll global leaked out of runBootstrap")
+	}
+}
+
+// A valid installer for ANOTHER Breeze server run on an enrolled host is a
+// mixed-up deploy share, not a move: the current bearer would be presented to
+// that server as the re-enrollment token (#1028). Keep the enrollment, spend
+// nothing, warn.
+func TestRunBootstrap_TokenForDifferentServerKeepsExistingEnrollment(t *testing.T) {
+	var hits atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverUrl":"","enrollmentKey":"child-key-abc","enrollmentSecret":"","siteId":"site1"}`))
+	}))
+	defer other.Close()
+	cfgPath := writeBootstrapEnrolledConfig(t, "OLDTOKEN00", "https://rmm.customer-a.example")
+	code, _, evErr, evWarn := bootstrapSinks(t, cfgPath, `C:\dl\breeze-agent.msi|NEWTOKEN01|`+other.URL)
+
+	runBootstrapRecovering()
+
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("other server contacted %d time(s); the token must not be redeemed against a server this agent is not enrolled with", n)
+	}
+	if *code != -1 || *evErr != "" {
+		t.Fatalf("exit=%d evErr=%q, want soft exit 0", *code, *evErr)
+	}
+	if !strings.Contains(*evWarn, "different server") {
+		t.Fatalf("warning must name the server mismatch: %q", *evWarn)
+	}
+	if got := loadAgentID(t, cfgPath); got != existingAgentID {
+		t.Fatalf("agent_id = %q, want untouched %q", got, existingAgentID)
+	}
+}
+
+// The redeem response may re-point the agent (serverUrl); the same rule
+// applies to where the enrollment would be sent.
+func TestRunBootstrap_RedeemRedirectToDifferentServerKeepsExistingEnrollment(t *testing.T) {
+	var enrolls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/installer/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"serverUrl":"https://rmm.customer-b.example","enrollmentKey":"child-key-abc","enrollmentSecret":"","siteId":"site1"}`))
+	})
+	mux.HandleFunc("/api/v1/agents/enroll", func(w http.ResponseWriter, r *http.Request) {
+		enrolls.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	cfgPath := writeBootstrapEnrolledConfig(t, "OLDTOKEN00", srv.URL)
+	code, _, _, evWarn := bootstrapSinks(t, cfgPath, `C:\dl\breeze-agent.msi|NEWTOKEN01|`+srv.URL)
+
+	runBootstrapRecovering()
+
+	if *code != -1 || enrolls.Load() != 0 || !strings.Contains(*evWarn, "different server") {
+		t.Fatalf("exit=%d enrolls=%d warn=%q; want soft exit, no enroll, mismatch named", *code, enrolls.Load(), *evWarn)
+	}
+	if got := loadAgentID(t, cfgPath); got != existingAgentID {
+		t.Fatalf("agent_id = %q, want untouched %q", got, existingAgentID)
+	}
+}
+
+func TestSameControlPlane(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"https://rmm.example", "https://rmm.example/", true},
+		{"HTTPS://RMM.EXAMPLE", "https://rmm.example", true},
+		{"https://rmm.example:8443", "https://rmm.example", false},
+		{"http://rmm.example", "https://rmm.example", false},
+		{"https://rmm.example", "https://other.example", false},
+		{"", "https://rmm.example", false},
+		{"rmm.example", "rmm.example", false},
+	} {
+		if got := sameControlPlane(tc.a, tc.b); got != tc.want {
+			t.Errorf("sameControlPlane(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
 	}
 }

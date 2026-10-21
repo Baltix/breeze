@@ -102,14 +102,13 @@ func TestResolveBootstrapInputs(t *testing.T) {
 // filename token would 4xx. A DIFFERENT token is handled in
 // bootstrap_reenroll_test.go (#9540).
 func TestRunBootstrapSkipsRedeemWhenAlreadyEnrolled(t *testing.T) {
-	cfgPath := writeBootstrapEnrolledConfig(t, "TESTTOKEN1")
-
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1) // any request here IS the bug
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
+	cfgPath := writeBootstrapEnrolledConfig(t, "TESTTOKEN1", srv.URL)
 
 	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
 	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
