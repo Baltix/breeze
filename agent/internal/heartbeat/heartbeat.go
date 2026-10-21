@@ -480,6 +480,7 @@ type Heartbeat struct {
 	eventLogCol        *collectors.EventLogCollector
 	bootCol            *collectors.BootPerformanceCollector
 	reliabilityCol     *collectors.ReliabilityCollector
+	loopDefer          loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
 	agentVersion       string
 	desktopMgr         *desktop.SessionManager
 	wsDesktopMgr       *desktop.WsSessionManager
@@ -2290,6 +2291,7 @@ func (h *Heartbeat) Start() {
 			}
 			h.sendHeartbeatWithWatchdog()
 			now := time.Now()
+			patchRouteReady := h.loopReady("PUT", h.agentRouteURL("patches/pending")) // W09: before the claim; outside h.mu
 			// Send inventory every 15 minutes
 			h.mu.Lock()
 			shouldSendInventory := now.Sub(h.lastInventoryUpdate) > 15*time.Minute
@@ -2327,7 +2329,7 @@ func (h *Heartbeat) Start() {
 			// Initial send is the explicit startup dispatch; this gate handles the rest.
 			patchIntervalHours := clampPatchScanIntervalHours(h.config.PatchScanIntervalHours)
 			patchInterval := time.Duration(patchIntervalHours) * time.Hour
-			shouldSendPatch := h.claimPatchScanLocked(now, patchInterval)
+			shouldSendPatch := patchRouteReady && h.claimPatchScanLocked(now, patchInterval)
 			hwTiers := h.hardwareTiersLocked(now, false)
 			h.timeSyncTickLocked(now)
 			h.mu.Unlock()
@@ -2546,6 +2548,9 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 	}
 
 	url := h.monitoringResultsURL()
+	if !h.loopReady("PUT", url) {
+		return // point-in-time results: a deferred cycle drops them, as a shed would
+	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -2556,6 +2561,7 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("PUT", url, err)
 		log.Warn("failed to send monitoring results", "error", err.Error(), "count", len(results))
 		return
 	}
@@ -2610,13 +2616,16 @@ func (h *Heartbeat) authHeader() string {
 
 // sendInventoryData marshals the payload and sends it to the given endpoint via PUT.
 func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string) error {
+	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.serverURL(), h.config.AgentID, endpoint)
+	if !h.loopReady("PUT", url) {
+		return ErrDeferred
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal inventory", "label", label, "error", err.Error())
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.serverURL(), h.config.AgentID, endpoint)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -2641,6 +2650,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("PUT", url, err)
 		log.Error("failed to send inventory", "label", label, "error", err.Error())
 		return err
 	}
@@ -2808,6 +2818,9 @@ func (h *Heartbeat) runProcessSampler() {
 // sendProcessSample builds a top-N process snapshot and POSTs it to the ingest
 // route, mirroring sendInventoryData's auth/retry/timeout handling.
 func (h *Heartbeat) sendProcessSample() {
+	if !h.loopReady("POST", h.agentRouteURL("process-sample")) {
+		return
+	}
 	entries, err := tools.TopProcessSample(processSampleTopN)
 	if err != nil {
 		log.Error("failed to collect process sample", "error", err.Error())
@@ -2835,6 +2848,7 @@ func (h *Heartbeat) sendProcessSample() {
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("POST", url, err)
 		log.Error("failed to send process sample", "error", err.Error())
 		return
 	}
@@ -2855,6 +2869,9 @@ func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) 
 	}
 
 	url := fmt.Sprintf("%s/api/v1/agents/%s/peripherals/events", h.serverURL(), h.config.AgentID)
+	if !h.loopReady("PUT", url) {
+		return ErrDeferred
+	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -2865,6 +2882,7 @@ func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) 
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "PUT", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("PUT", url, err)
 		return fmt.Errorf("PUT peripheral events: %w", err)
 	}
 	defer resp.Body.Close()
@@ -4324,6 +4342,9 @@ func (h *Heartbeat) sendConnectionsInventory() {
 }
 
 func (h *Heartbeat) sendEventLogs() {
+	if !h.loopReady("PUT", h.agentRouteURL("eventlogs")) {
+		return // before Collect: the watermark advances at collect
+	}
 	events, err := collectors.Guard("eventLogs", h.eventLogCol.Collect)
 	if err != nil {
 		log.Error("failed to collect event logs", "error", err.Error())
@@ -4351,6 +4372,9 @@ func (h *Heartbeat) sendSecurityStatus() {
 // gate) — recovery keys should not transit the wire every 5 minutes. Also
 // drains rotation results whose upload previously failed.
 func (h *Heartbeat) sendRecoveryKeys() {
+	if !h.loopReady("PUT", h.agentRouteURL("security/recovery-keys")) {
+		return // before the pop: parked keys stay parked, no false key-loss ERROR
+	}
 	h.mu.Lock()
 	pending := h.pendingRecoveryKeys
 	h.pendingRecoveryKeys = nil
@@ -4446,6 +4470,9 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 		return
 	}
 	url := fmt.Sprintf("%s/api/v1/agents/%s/boot-performance", h.serverURL(), h.config.AgentID)
+	if !h.loopReady("POST", url) {
+		return
+	}
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -4456,6 +4483,7 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("POST", url, err)
 		log.Error("failed to send boot performance", "error", err.Error())
 		return
 	}
@@ -4481,6 +4509,9 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 	if h.reliabilityCol == nil {
 		return
 	}
+	if !h.loopReady("POST", h.agentRouteURL("reliability")) {
+		return // persisted 24 h gate stays stale, as on a failed send
+	}
 
 	metrics, err := collectors.Guard("reliability", h.reliabilityCol.Collect)
 	if err != nil {
@@ -4505,6 +4536,7 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
+		h.noteLoopAnswer("POST", url, err)
 		log.Error("failed to send reliability metrics", "error", err.Error())
 		return
 	}
