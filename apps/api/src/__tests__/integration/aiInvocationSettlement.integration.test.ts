@@ -1068,6 +1068,39 @@ describe.skipIf(!RUN)('compute and unreserved token debits are keyed and durable
     expect(computeCallsFor(runId)).toHaveLength(2);
   });
 
+  it('inside a caller\'s open SYSTEM transaction that already updated the run (the reaper inside admission): no self-deadlock; the intent commits with the caller and the sweep sends it', async () => {
+    const runId = await seedAgentRun(s);
+    await sys(async () => {
+      // What transitionRunStatus does first, uncommitted, in admission's transaction.
+      await db.execute(sql`UPDATE ai_agent_runs SET status = 'failed' WHERE id = ${runId}::uuid`);
+      await Promise.race([
+        settleComputeCents(s.orgId, runId, 25, 'platform'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('settleComputeCents blocked on the caller\'s own row lock')), 10_000)),
+      ]);
+    });
+    // Not sent inline (it was not committed yet); owed durably.
+    expect(computeCallsFor(runId)).toHaveLength(0);
+    const [row] = await q<{ key: string; debited_at: string | null }>(sql`
+      SELECT idempotency_key AS key, debited_at FROM ai_credit_debits WHERE source_id = ${runId}::uuid`);
+    expect(row).toMatchObject({ debited_at: null });
+    await backdateCreditDebit(row!.key);
+    await settleAndDebitAiReservations();
+    expect(computeCallsFor(runId)).toEqual([{ key: row!.key, headerKey: row!.key, costCents: 25 }]);
+  }, 30_000);
+
+  it('a deployment with no billing service records no debit intent (nothing to owe, nothing to replay later) and cannot re-drive', async () => {
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    const out = await settleInvocation(settleInput(s, binding, undefined));
+    expect(await q(sql`SELECT 1 FROM ai_credit_debits WHERE org_id = ${s.orgId}::uuid`)).toHaveLength(0);
+    expect(out.invocationIds).toHaveLength(1);
+    expect(await computeRollup(s.orgId)).toBe(13);   // still charged on the run + rollup
+    await expect(redriveFailedCreditDebit({ source: 'compute', id: randomUUID() })).rejects.toThrow(/billing service/);
+    await expect(requeueFailedCreditDebits({ orgId: s.orgId, limit: 10 })).rejects.toThrow(/billing service/);
+  });
+
   it('a reclaimed run is a new attempt: it debits under a NEW key', async () => {
     const runId = await seedAgentRun(s);
     await settleComputeCents(s.orgId, runId, 13, 'platform');

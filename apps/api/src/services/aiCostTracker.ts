@@ -6,7 +6,7 @@
  * priced and written by aiModels/settleInvocation.ts (W03 #7601).
  */
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
 import { aiAgentRuns } from '../db/schema/aiAgents';
 import { eq, and, sql, desc, isNotNull, isNull } from 'drizzle-orm';
@@ -400,9 +400,18 @@ export async function settleComputeCents(
 ): Promise<void> {
   const cents = Number.isFinite(actualCents) && actualCents > 0 ? Math.ceil(actualCents) : 0;
 
-  // Own transaction (never an ambient request one): the intent must be
-  // committed before the billing call below goes out.
-  const claim = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  // Inside an ambient SYSTEM transaction (the stalled-run reaper runs inside
+  // admission's, which has already UPDATEd this run row), the claim MUST join
+  // it: a second connection would block on that row lock while the caller
+  // awaits us — a self-deadlock. The intent then commits with the caller, and
+  // is NOT sent inline (it is not committed yet, and an HTTP call must never
+  // run inside a held transaction, #1105): the sweep delivers it after its
+  // grace. Otherwise: own transaction, committed before the billing call.
+  const joinAmbient = getCurrentDbAccessContext()?.scope === 'system';
+  const claimTx = <T>(fn: () => Promise<T>): Promise<T> => joinAmbient
+    ? fn()
+    : runOutsideDbContext(() => withSystemDbAccessContext(fn, 'aiCostTracker.settleComputeCents'));
+  const claim = await claimTx(async () => {
     const [claimed] = await db
       .update(aiAgentRuns)
       .set({ computeCents: cents, computeReservedCents: null, computeSettledAt: sql`now()` })
@@ -413,7 +422,7 @@ export async function settleComputeCents(
       ? await insertCreditDebitIntent({ orgId, source: 'compute', sourceId: runId, idempotencyKey: claimed.debitKey, costCents: cents })
       : null;
     return { intent };
-  }, 'aiCostTracker.settleComputeCents'));
+  });
 
   if (!claim) {
     console.warn('[AI] compute already settled for this run attempt; not settled again', { orgId, runId, cents, billingSource });
@@ -450,7 +459,8 @@ export async function settleComputeCents(
   }
 
   // Never throws; a failure stays on the outbox row for the sweep / an operator.
-  if (claim.intent) await deliverCreditDebit(claim.intent);
+  // Joined an ambient transaction → the sweep sends it once that commits.
+  if (claim.intent && !joinAmbient) await deliverCreditDebit(claim.intent);
 }
 
 export interface SdkInputTokenUsage {

@@ -27,6 +27,20 @@ import {
   type CreditDebitIntent,
   type CreditDebitOutcome,
 } from './aiCreditDebitOutbox';
+import { isBillingServiceConfigured } from './aiCreditDebitClient';
+
+/**
+ * Thrown by the re-drive verbs when this deployment has no billing service:
+ * clearing a failure stamp then would drop the row out of every operator view
+ * (no longer failed, and the sweep does not send without a billing service)
+ * while nothing was debited.
+ */
+export class BillingServiceNotConfiguredError extends Error {
+  constructor() {
+    super('No billing service is configured on this deployment; nothing can be re-driven');
+    this.name = 'BillingServiceNotConfiguredError';
+  }
+}
 import { debitSettledCredits } from './aiModels/settleInvocation';
 
 export { listUndeliveredCreditDebits } from './aiCreditDebitOutbox';
@@ -166,6 +180,7 @@ export async function listFailedPlatformCreditDebits(filter: FailedCreditDebitFi
 export async function requeueFailedCreditDebits(
   filter: FailedCreditDebitFilter & { limit: number },
 ): Promise<Array<{ source: CreditDebitSourceKind; id: string }>> {
+  if (!isBillingServiceConfigured()) throw new BillingServiceNotConfiguredError();
   return inOwnTransaction('aiCreditDebits.requeueFailed', async () => {
     const targets = await selectFailed(filter);
     const settlementIds = targets.filter((t) => t.source === 'settlement').map((t) => t.id);
@@ -193,16 +208,34 @@ export async function requeueFailedCreditDebits(
   });
 }
 
+export interface AiBillingOperatorBacklog {
+  failedDebits: number;
+  deadSettlements: number;
+  /**
+   * Outbox debits neither confirmed nor failed an hour after they were owed.
+   * Normally the sweep resolves these within minutes; one that lingers is
+   * stuck in a way that never advances its retry count (e.g. its bookkeeping
+   * keeps failing), so it would otherwise never reach the failed list.
+   */
+  staleUndeliveredDebits: number;
+}
+
 /** Counts behind the sweep's operator-backlog alert (#7717 item 3). */
-export async function countAiBillingOperatorBacklog(): Promise<{ failedDebits: number; deadSettlements: number }> {
+export async function countAiBillingOperatorBacklog(): Promise<AiBillingOperatorBacklog> {
   return inOwnTransaction('aiCreditDebits.countBacklog', async () => {
-    const [row] = rows<{ failed: string | number; dead: string | number }>(await db.execute(sql`
+    const [row] = rows<{ failed: string | number; dead: string | number; stale: string | number }>(await db.execute(sql`
       SELECT
         (SELECT count(*) FROM ${failedDebitsUnion()}) AS failed,
         (SELECT count(*) FROM ai_budget_reservations
-          WHERE pending_settlement_dead_at IS NOT NULL AND pending_settlement IS NOT NULL) AS dead
+          WHERE pending_settlement_dead_at IS NOT NULL AND pending_settlement IS NOT NULL) AS dead,
+        (SELECT count(*) FROM ai_credit_debits
+          WHERE debited_at IS NULL AND failed_at IS NULL AND created_at < now() - interval '1 hour') AS stale
     `));
-    return { failedDebits: Number(row?.failed ?? 0), deadSettlements: Number(row?.dead ?? 0) };
+    return {
+      failedDebits: Number(row?.failed ?? 0),
+      deadSettlements: Number(row?.dead ?? 0),
+      staleUndeliveredDebits: Number(row?.stale ?? 0),
+    };
   });
 }
 
@@ -217,6 +250,7 @@ export type CreditDebitRedrive =
  * `not_found` = no such row, or it is not (or no longer) failed.
  */
 export async function redriveFailedCreditDebit(target: { source: CreditDebitSourceKind; id: string }): Promise<CreditDebitRedrive> {
+  if (!isBillingServiceConfigured()) throw new BillingServiceNotConfiguredError();
   if (target.source === 'settlement') {
     const [row] = await inOwnTransaction('aiCreditDebits.redriveSettlement', async () =>
       rows<{ org_id: string; actual_cost_cents: string | number }>(await db.execute(sql`

@@ -103,8 +103,9 @@ function toIntent(row: IntentRow): CreditDebitIntent {
 /**
  * Record a debit obligation. MUST run inside the caller's system-context
  * transaction, so the intent commits (or rolls back) with the spend it bills.
- * Returns null when the key already exists: that spend's debit is already
- * owed (or paid) under it, and nothing new may be sent.
+ * Returns null when the key already exists (that spend's debit is already
+ * owed, or paid, under it, and nothing new may be sent), or when this
+ * deployment has no billing service.
  */
 export async function insertCreditDebitIntent(input: {
   orgId: string;
@@ -113,6 +114,10 @@ export async function insertCreditDebitIntent(input: {
   idempotencyKey: string;
   costCents: number | string;
 }): Promise<CreditDebitIntent | null> {
+  // No billing service (self-hosted): there is nobody to owe, and an
+  // undeliverable row would only pile up — or worse, replay as real debits the
+  // day one is configured. Same posture as before #9451 (the deduct no-op'd).
+  if (!isBillingServiceConfigured()) return null;
   const [row] = rows<IntentRow>(await db.execute(sql`
     INSERT INTO ai_credit_debits (org_id, source, source_id, idempotency_key, cost_cents)
     VALUES (${input.orgId}::uuid, ${input.source}, ${input.sourceId}::uuid, ${input.idempotencyKey}, ${String(input.costCents)}::numeric)

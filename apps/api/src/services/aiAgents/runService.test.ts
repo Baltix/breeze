@@ -1025,6 +1025,11 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     expect(where).toContain('"error_code"');
     expect(dbMockState.updateSets.at(-1)).toMatchObject({ status: 'queued', errorCode: null });
     expect(dbMockState.updateSets.at(-1)?.finishedAt).toBeNull();
+    // #9451: a reclaim is a NEW attempt — its compute settlement reopens (the
+    // previous attempt's claim must not suppress it) and its re-stamped
+    // queuedAt is the attempt identity in the ai-compute:<run>:<attempt> key.
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({ computeSettledAt: null, computeCents: null });
+    expect(dbMockState.updateSets.at(-1)?.queuedAt).toBeInstanceOf(Date);
     // Phase 2 wave P2-1: the reclaim SET must carry the retrying caller's
     // profile/correlationGroupId too, not just leave the reclaimed row on
     // whatever it was originally inserted with — profile governs tool

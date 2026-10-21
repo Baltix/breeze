@@ -16,7 +16,12 @@ const svc = vi.hoisted(() => ({
   listDead: vi.fn(),
 }));
 
+const { BillingServiceNotConfiguredError } = vi.hoisted(() => ({
+  BillingServiceNotConfiguredError: class BillingServiceNotConfiguredError extends Error {},
+}));
+
 vi.mock('../../services/aiCreditDebits', () => ({
+  BillingServiceNotConfiguredError,
   CREDIT_DEBIT_SOURCES: ['settlement', 'compute', 'invocation'],
   CREDIT_DEBIT_FAILURE_CLASSES: ['auth', 'retries_exhausted', 'org_partner_missing', 'rejected'],
   MAX_FAILED_CREDIT_DEBIT_PAGE: 500,
@@ -169,6 +174,23 @@ describe('POST /failed-debits/redrive', () => {
     expect(auditActions()).not.toContain('ai_billing.credit_debit_redriven');
   });
 
+  it('409s (nothing cleared) when this deployment has no billing service', async () => {
+    svc.redrive.mockRejectedValue(new BillingServiceNotConfiguredError('no billing'));
+    const res = await post(buildApp(platformAdmin), '/failed-debits/redrive', { source: 'compute', id: ROW_ID });
+    expect(res.status).toBe(409);
+    svc.requeue.mockRejectedValue(new BillingServiceNotConfiguredError('no billing'));
+    expect((await post(buildApp(platformAdmin), '/failed-debits/requeue', { limit: 10, reason: 'rotated key' })).status).toBe(409);
+  });
+
+  it('audits a re-drive the billing service refused again as a failure', async () => {
+    svc.redrive.mockResolvedValue({ kind: 'attempted', outcome: 'rejected' });
+    const res = await post(buildApp(platformAdmin), '/failed-debits/redrive', { source: 'compute', id: ROW_ID });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createAuditLogAsync)).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ai_billing.credit_debit_redriven', result: 'failure',
+    }));
+  });
+
   it('rejects an unknown source', async () => {
     const res = await post(buildApp(platformAdmin), '/failed-debits/redrive', { source: 'other', id: ROW_ID });
     expect(res.status).toBe(400);
@@ -219,6 +241,15 @@ describe('dead pending settlements', () => {
     expect(res.status).toBe(status);
     expect(svc.replayDead).toHaveBeenCalledWith(ROW_ID);
     expect(auditActions().includes('ai_billing.dead_settlement_replayed')).toBe(result.kind === 'replayed' || result.kind === 'failed');
+  });
+
+  it('a replay whose debit was refused is audited as a failure (the spend itself is recorded)', async () => {
+    svc.replayDead.mockResolvedValue({ kind: 'replayed', settlement: 'settled', debit: 'rejected' });
+    const res = await post(buildApp(platformAdmin), `/dead-settlements/${ROW_ID}/replay`, {});
+    expect(res.status).toBe(200);
+    expect(vi.mocked(createAuditLogAsync)).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'ai_billing.dead_settlement_replayed', result: 'failure',
+    }));
   });
 
   it('rejects a malformed reservation id', async () => {

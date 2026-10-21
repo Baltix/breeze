@@ -485,10 +485,12 @@ const ALLOWED_TAG_NAMES = new Set([
   // ai_credit_debits.id (opaque UUID, what /admin/ai-billing re-drives by);
   // `ai_credit_debit_source` is the enum 'compute' | 'invocation'. The two
   // counts are the sweep's operator-backlog alert: small integers.
+  // (three counts: failed debits, dead settlements, stale undelivered debits)
   'ai_credit_debit_id',
   'ai_credit_debit_source',
   'ai_failed_credit_debits',
   'ai_dead_pending_settlements',
+  'ai_stale_undelivered_credit_debits',
   // AI chargeback W10 (#7608): the UTC billing month ('YYYY-MM-01') of a
   // monthly close that failed or found expired usage — with `org_id`, the key
   // an operator needs to find the ai_usage_charge_runs slot. A date, one value

@@ -21,6 +21,8 @@ const inserts: Array<Record<string, unknown>> = [];
 let claimRows: Array<{ debitKey: string }> = [];
 const KEY = 'ai-compute:run-1:1700000000000000';
 
+const ctx = vi.hoisted(() => ({ ambient: undefined as { scope: string } | undefined, ownTransactions: 0 }));
+
 const outbox = vi.hoisted(() => ({
   insertCreditDebitIntent: vi.fn(),
   deliverCreditDebit: vi.fn(),
@@ -51,7 +53,8 @@ vi.mock('../db', () => ({
     }),
   },
   withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
-  runOutsideDbContext: (fn: () => Promise<unknown>) => fn(),
+  runOutsideDbContext: (fn: () => Promise<unknown>) => { ctx.ownTransactions++; return fn(); },
+  getCurrentDbAccessContext: () => ctx.ambient,
 }));
 
 import {
@@ -62,6 +65,8 @@ beforeEach(() => {
   updates.length = 0;
   inserts.length = 0;
   claimRows = [{ debitKey: KEY }];
+  ctx.ambient = undefined;
+  ctx.ownTransactions = 0;
   vi.restoreAllMocks();
   outbox.insertCreditDebitIntent.mockReset().mockImplementation(async (input: Record<string, unknown>) => ({
     id: 'debit-1', orgId: input.orgId, source: input.source, idempotencyKey: input.idempotencyKey, costCents: input.costCents,
@@ -123,6 +128,22 @@ describe('reserveComputeCents / settleComputeCents', () => {
       orgId: 'org-1', source: 'compute', sourceId: 'run-1', idempotencyKey: KEY, costCents: 13,
     });
     expect(outbox.deliverCreditDebit).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: KEY, costCents: 13 }));
+  });
+
+  it('inside an ambient SYSTEM transaction (the reaper inside admission) it joins it and leaves delivery to the sweep', async () => {
+    // A second connection would block on the run row the caller's open
+    // transaction already updated, while the caller awaits us: self-deadlock.
+    ctx.ambient = { scope: 'system' };
+    await settleComputeCents('org-1', 'run-1', 13, 'platform');
+    expect(ctx.ownTransactions).toBe(0);
+    expect(outbox.insertCreditDebitIntent).toHaveBeenCalled();
+    expect(outbox.deliverCreditDebit).not.toHaveBeenCalled();
+  });
+
+  it('outside one it opens its own transaction and delivers after it commits', async () => {
+    await settleComputeCents('org-1', 'run-1', 13, 'platform');
+    expect(ctx.ownTransactions).toBe(1);
+    expect(outbox.deliverCreditDebit).toHaveBeenCalled();
   });
 
   it('a second settle of the same attempt (claim lost) rolls up nothing and debits nothing', async () => {

@@ -13,7 +13,7 @@ import { isBillingServiceConfigured } from '../services/aiCostTracker';
 import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { debitSettledCredits } from '../services/aiModels/settleInvocation';
 import { retryUndeliveredCreditDebits } from '../services/aiCreditDebitOutbox';
-import { countAiBillingOperatorBacklog } from '../services/aiCreditDebits';
+import { countAiBillingOperatorBacklog, type AiBillingOperatorBacklog } from '../services/aiCreditDebits';
 import { attachWorkerObservability } from './workerObservability';
 
 /**
@@ -153,14 +153,15 @@ let lastBacklogReportAt = 0;
 
 /**
  * #7717 item 3: page when platform credit debits or deferred settlements are
- * waiting on an operator (terminally failed debits, dead pending settlements).
+ * waiting on an operator (terminally failed debits, dead pending settlements),
+ * or when an owed debit has sat unresolved for over an hour.
  * Neither is ever retried automatically, so a non-zero count is unbilled spend
  * until someone acts at /admin/ai-billing. At most one Sentry event per hour
  * per process; the counts ride along as tags.
  */
-export async function reportAiBillingOperatorBacklog(now = Date.now()): Promise<{ failedDebits: number; deadSettlements: number }> {
+export async function reportAiBillingOperatorBacklog(now = Date.now()): Promise<AiBillingOperatorBacklog> {
   const backlog = await countAiBillingOperatorBacklog();
-  if (backlog.failedDebits + backlog.deadSettlements === 0) return backlog;
+  if (backlog.failedDebits + backlog.deadSettlements + backlog.staleUndeliveredDebits === 0) return backlog;
   console.warn('[AiBudgetReservationSweep] AI billing items need an operator', backlog);
   if (now - lastBacklogReportAt >= BACKLOG_REPORT_INTERVAL_MS) {
     lastBacklogReportAt = now;
@@ -170,6 +171,7 @@ export async function reportAiBillingOperatorBacklog(now = Date.now()): Promise<
       tags: {
         ai_failed_credit_debits: String(backlog.failedDebits),
         ai_dead_pending_settlements: String(backlog.deadSettlements),
+        ai_stale_undelivered_credit_debits: String(backlog.staleUndeliveredDebits),
       },
     });
   }

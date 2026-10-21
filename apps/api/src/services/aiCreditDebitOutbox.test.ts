@@ -27,6 +27,7 @@ vi.mock('../db', () => ({
 import {
   __resetCreditDebitOutboxReportsForTests,
   deliverCreditDebit,
+  insertCreditDebitIntent,
   invocationDebitIdempotencyKey,
   retryUndeliveredCreditDebits,
   type CreditDebitIntent,
@@ -125,6 +126,20 @@ describe('retryUndeliveredCreditDebits', () => {
       ['o1', 13, { idempotencyKey: 'ai-compute:r:1' }],
       ['o2', 0.25, { idempotencyKey: 'ai-invocation:i9' }],
     ]);
+  });
+});
+
+describe('insertCreditDebitIntent', () => {
+  it('records nothing on a deployment with no billing service (nothing to owe; no backlog to replay later)', async () => {
+    m.configured.mockReturnValue(false);
+    expect(await insertCreditDebitIntent({ orgId: 'o1', source: 'compute', sourceId: 'r1', idempotencyKey: 'k', costCents: 1 })).toBeNull();
+    expect(m.execute).not.toHaveBeenCalled();
+  });
+
+  it('a key that already exists yields no intent (ON CONFLICT DO NOTHING)', async () => {
+    m.execute.mockResolvedValueOnce([]);
+    expect(await insertCreditDebitIntent({ orgId: 'o1', source: 'compute', sourceId: 'r1', idempotencyKey: 'k', costCents: 1 })).toBeNull();
+    expect(executedSql()[0]).toContain('ON CONFLICT (idempotency_key) DO NOTHING');
   });
 });
 

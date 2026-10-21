@@ -26,7 +26,7 @@ const { hoisted } = vi.hoisted(() => ({
     debitSettledCredits: vi.fn(async (_input: unknown) => undefined),
     isBillingServiceConfigured: vi.fn(() => true),
     retryUndeliveredCreditDebits: vi.fn(async () => 0),
-    countAiBillingOperatorBacklog: vi.fn(async () => ({ failedDebits: 0, deadSettlements: 0 })),
+    countAiBillingOperatorBacklog: vi.fn(async () => ({ failedDebits: 0, deadSettlements: 0, staleUndeliveredDebits: 0 })),
     captureMessage: vi.fn(),
     captureException: vi.fn(),
     getBullMQConnection: vi.fn(() => ({})),
@@ -252,15 +252,21 @@ describe('reportAiBillingOperatorBacklog (#7717 item 3)', () => {
     expect(hoisted.captureMessage).not.toHaveBeenCalled();
   });
 
+  it('alerts on stale undelivered debits alone (stuck without ever failing)', async () => {
+    hoisted.countAiBillingOperatorBacklog.mockResolvedValueOnce({ failedDebits: 0, deadSettlements: 0, staleUndeliveredDebits: 1 });
+    await reportAiBillingOperatorBacklog();
+    expect(hoisted.captureMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('alerts once per hour with the counts when anything does', async () => {
-    hoisted.countAiBillingOperatorBacklog.mockResolvedValue({ failedDebits: 3, deadSettlements: 1 });
+    hoisted.countAiBillingOperatorBacklog.mockResolvedValue({ failedDebits: 3, deadSettlements: 1, staleUndeliveredDebits: 2 });
     const t0 = 1_000_000_000;
     await reportAiBillingOperatorBacklog(t0);
     await reportAiBillingOperatorBacklog(t0 + 30 * 60 * 1000);
     expect(hoisted.captureMessage).toHaveBeenCalledTimes(1);
     expect(hoisted.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       eventCode: 'ai_billing_operator_backlog',
-      tags: { ai_failed_credit_debits: '3', ai_dead_pending_settlements: '1' },
+      tags: { ai_failed_credit_debits: '3', ai_dead_pending_settlements: '1', ai_stale_undelivered_credit_debits: '2' },
     }));
     await reportAiBillingOperatorBacklog(t0 + 61 * 60 * 1000);
     expect(hoisted.captureMessage).toHaveBeenCalledTimes(2);
@@ -273,7 +279,7 @@ describe('the sweep worker', () => {
     vi.clearAllMocks();
     hoisted.processors.length = 0;
     hoisted.expireStaleAiBudgetReservations.mockResolvedValue([]);
-    hoisted.countAiBillingOperatorBacklog.mockResolvedValue({ failedDebits: 0, deadSettlements: 0 });
+    hoisted.countAiBillingOperatorBacklog.mockResolvedValue({ failedDebits: 0, deadSettlements: 0, staleUndeliveredDebits: 0 });
     hoisted.withSystemDbAccessContext.mockImplementation((fn: () => unknown) => fn());
   });
 

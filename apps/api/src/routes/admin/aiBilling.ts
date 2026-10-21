@@ -26,6 +26,7 @@ import { listDeadPendingSettlements } from '../../services/aiBudgetReservations'
 import {
   CREDIT_DEBIT_FAILURE_CLASSES,
   CREDIT_DEBIT_SOURCES,
+  BillingServiceNotConfiguredError,
   MAX_FAILED_CREDIT_DEBIT_PAGE,
   listFailedPlatformCreditDebits,
   redriveFailedCreditDebit,
@@ -37,6 +38,15 @@ import { createAuditLogAsync } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 export const aiBillingAdminRoutes = new Hono();
+
+// Re-driving needs a billing service to send to; without one, clearing a
+// failure stamp would just hide the row. 409, nothing changed.
+aiBillingAdminRoutes.onError((err, c) => {
+  if (err instanceof BillingServiceNotConfiguredError) return c.json({ error: err.message }, 409);
+  throw err;
+});
+
+const SUCCESSFUL_DEBIT_OUTCOMES = new Set(['debited', 'not_configured']);
 
 const isoDate = z.string().datetime({ offset: true }).transform((value) => new Date(value));
 const limit = z.coerce.number().int().min(1).max(MAX_FAILED_CREDIT_DEBIT_PAGE);
@@ -104,7 +114,7 @@ aiBillingAdminRoutes.post('/failed-debits/redrive', requireMfa(), zValidator('js
     action: 'ai_billing.credit_debit_redriven',
     resourceId: id,
     details: { source, outcome: result.outcome, ...(reason ? { reason } : {}) },
-    result: result.outcome === 'debited' || result.outcome === 'not_configured' ? 'success' : 'failure',
+    result: SUCCESSFUL_DEBIT_OUTCOMES.has(result.outcome) ? 'success' : 'failure',
   });
   return c.json({ data: { outcome: result.outcome } });
 });
@@ -158,6 +168,8 @@ aiBillingAdminRoutes.post(
         audit(c, {
           action: 'ai_billing.dead_settlement_replayed', resourceId: reservationId,
           details: { settlement: result.settlement, debit: result.debit, ...(reason ? { reason } : {}) },
+          // The spend is recorded either way; the audit says whether billing took it.
+          result: result.debit === null || SUCCESSFUL_DEBIT_OUTCOMES.has(result.debit) ? 'success' : 'failure',
         });
         return c.json({ data: result });
     }

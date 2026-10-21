@@ -88,7 +88,13 @@ export async function debitBillingCredits(
       body: JSON.stringify({ costCents, idempotencyKey: key }),
       signal: AbortSignal.timeout(CREDIT_DEBIT_TIMEOUT_MS),
     });
-  } catch {
+  } catch (err) {
+    // The stored code stays the bounded 'transport'; the cause (DNS, TLS,
+    // timeout abort) goes to the log so a retries_exhausted:transport row is
+    // diagnosable. Name + message only: never the request or its headers.
+    console.warn('[AI] billing credit debit transport failure', {
+      orgId, errorName: err instanceof Error ? err.name : typeof err, error: err instanceof Error ? err.message : String(err),
+    });
     return { kind: 'retryable', status: null, code: 'transport' };
   }
   if (res.ok) return { kind: 'debited', replayed: res.headers.get('Idempotent-Replayed') === 'true' };
