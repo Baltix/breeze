@@ -63,6 +63,10 @@ type Config struct {
 	// defaultFirstReconnectWindow (30 s); a value is clamped to [0, 300 s],
 	// and any value at or below 5 s gives #9145's 1–5 s spread.
 	FirstReconnectWindow *time.Duration
+	// StartDialWindow bounds the uniform wait before the process's first
+	// dial. nil means defaultStartDialWindow (10 s); a value is clamped to
+	// [0, 10 s]. Tests that start a client set it to 0.
+	StartDialWindow *time.Duration
 }
 
 // Command represents a command received via WebSocket
@@ -304,9 +308,13 @@ func New(cfg *Config, handler CommandHandler) *Client {
 				"configured", *cfg.FirstReconnectWindow, "using", firstWindow)
 		}
 	}
+	startWindow := defaultStartDialWindow
+	if cfg.StartDialWindow != nil {
+		startWindow = min(max(*cfg.StartDialWindow, 0), defaultStartDialWindow)
+	}
 	return &Client{
 		firstWindow:     firstWindow,
-		startWindow:     defaultStartDialWindow,
+		startWindow:     startWindow,
 		config:          cfg,
 		cmdHandler:      handler,
 		done:            make(chan struct{}),
@@ -992,6 +1000,29 @@ func (c *Client) processCommand(cmd Command) {
 	result := c.cmdHandler(cmd)
 	result.Type = "command_result"
 	result.CommandID = cmd.ID
+
+	// W09 (#8148, D11): with no socket held, a result queued in memory would
+	// wait out a reconnect window of up to 30 s (or a drain window) AFTER
+	// OnResultHandedOff cleared its journal entry, so a hard kill in between
+	// lost it. Persist it to the outbox first; the next OnConnected flush
+	// delivers it. If a socket came up while the outbox write ran, its flush
+	// may already have passed, so send directly too: the server tolerates a
+	// duplicate terminal result. Direct SendResult callers (tunnel, clipboard
+	// and desktop notices) keep buffering; they have no durable copy to lose.
+	if result.Status != "duplicate" && c.OnResultWriteFailed != nil && !c.IsConnected() && !c.stopped() {
+		log.Info("command result held for reconnect; persisting to the outbox", "commandId", cmd.ID)
+		c.handleResultWriteFailure(result)
+		if c.IsConnected() {
+			if err := c.SendResult(result); err != nil {
+				log.Warn("direct send after outbox persist failed; the outbox keeps it",
+					"commandId", cmd.ID, "error", err.Error())
+			}
+		}
+		if c.OnResultHandedOff != nil {
+			c.OnResultHandedOff(result)
+		}
+		return
+	}
 
 	if err := c.SendResult(result); err != nil {
 		// Most often "client is stopped": a long command (install_patches

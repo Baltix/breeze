@@ -188,6 +188,12 @@ func TestFirstReconnectWindowUnsetIsDefault(t *testing.T) {
 	if c.firstWindow != maxFirstReconnectWindow {
 		t.Fatalf("firstWindow with 1h = %v, want clamped to %v", c.firstWindow, maxFirstReconnectWindow)
 	}
+	for _, tc := range []struct{ in, want time.Duration }{{0, 0}, {-time.Second, 0}, {3 * time.Second, 3 * time.Second}, {time.Hour, defaultStartDialWindow}} {
+		c = New(&Config{ServerURL: "http://127.0.0.1:1", AgentID: "a", StartDialWindow: ptrDuration(tc.in)}, noopHandler)
+		if c.startWindow != tc.want {
+			t.Fatalf("StartDialWindow %v → startWindow %v, want %v", tc.in, c.startWindow, tc.want)
+		}
+	}
 }
 
 func TestWSStartDialJittered(t *testing.T) {
