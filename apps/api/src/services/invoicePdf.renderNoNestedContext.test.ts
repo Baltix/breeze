@@ -19,6 +19,8 @@ const state = vi.hoisted(() => ({
   rows: {} as Record<string, unknown[]>,
   selects: [] as { table: string; nested: boolean }[],
   depth: 0,
+  failTable: null as string | null,
+  inserts: 0,
 }));
 
 vi.mock('../db', () => {
@@ -27,6 +29,7 @@ vi.mock('../db', () => {
     const chain: Record<string, unknown> = {};
     const settle = () => {
       state.selects.push({ table, nested: state.depth > 0 });
+      if (table === state.failTable) return Promise.reject(new Error(`read of ${table} failed`));
       return Promise.resolve(state.rows[table] ?? []);
     };
     chain.from = (t: PgTable) => { table = getTableName(t); return chain; };
@@ -48,7 +51,7 @@ vi.mock('../db', () => {
     try { return await fn(); } finally { state.depth -= 1; }
   };
   return {
-    db: { select, insert: () => insertChain, update: () => updateChain },
+    db: { select, insert: () => { state.inserts += 1; return insertChain; }, update: () => updateChain },
     runOutsideDbContext: vi.fn(nested),
     withSystemDbAccessContext: vi.fn(nested),
   };
@@ -73,6 +76,8 @@ beforeEach(() => {
   state.rows = { invoices: [invoice], partners: [partner], portal_branding: [], stripe_connect_accounts: [connected] };
   state.selects = [];
   state.depth = 0;
+  state.failTable = null;
+  state.inserts = 0;
   vi.mocked(runOutsideDbContext).mockClear();
   vi.mocked(withSystemDbAccessContext).mockClear();
   vi.mocked(getOrMintInvoiceLink).mockClear();
@@ -98,6 +103,22 @@ describe('renderInvoicePdf online-payment availability (#9454)', () => {
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
     expect(getOrMintInvoiceLink).not.toHaveBeenCalled();
     expect(pdfText(pdf)).not.toContain('pay.example.test');
+  });
+
+  it('a failed availability read fails the render: nothing frozen without the pay line', async () => {
+    // The issued PDF is persisted and frozen, so a transient fault must fail the render
+    // (retryable), never bake in a line-less copy.
+    state.rows.stripe_connect_accounts = [];
+    state.failTable = 'stripe_connect_accounts';
+    await expect(renderInvoicePdf(invoice.id)).rejects.toThrow('read of stripe_connect_accounts failed');
+    expect(state.inserts).toBe(0);
+  });
+
+  it('a failed fallback (system-context) read fails the render too', async () => {
+    state.rows.partners = [];
+    state.failTable = 'stripe_connect_accounts';
+    await expect(renderInvoicePdf(invoice.id)).rejects.toThrow('read of stripe_connect_accounts failed');
+    expect(state.inserts).toBe(0);
   });
 
   it('a draft never reads availability at all (no pay link on a draft)', async () => {

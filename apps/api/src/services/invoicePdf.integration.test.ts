@@ -255,6 +255,18 @@ describe.runIf(RUN)('renderInvoicePdf pay-online line on the caller connection (
     expect(pdfText(pdf)).toContain('/invoice/');
   });
 
+  it('an org-scoped (portal) caller cannot see the partner row, falls back to the system read, and still prints the pay line', async () => {
+    const f = await seedIssuedInvoice();
+    await connectStripe(f.partnerId);
+    // The portal request context (routes/portal/auth.ts): partner-axis rows are invisible here,
+    // so a caller-connection read would wrongly say "not available".
+    const { pdf } = await withDbAccessContext({
+      scope: 'organization', orgId: f.orgId, accessibleOrgIds: [f.orgId], accessiblePartnerIds: [],
+      userId: null, currentPartnerId: null,
+    }, () => renderInvoicePdf(f.invoiceId));
+    expect(pdfText(pdf)).toContain('/invoice/');
+  });
+
   it('prints no pay line when the partner has no Stripe connection', async () => {
     const f = await seedIssuedInvoice();
     const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
