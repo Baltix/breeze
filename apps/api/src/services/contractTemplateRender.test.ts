@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mirrors commandQueue.test.ts's mocking idiom: a passthrough default so most
 // tests don't have to know the wrapper exists, with individual tests
@@ -481,6 +481,9 @@ describe('renderContractBlocksForClient', () => {
   beforeEach(() => {
     vi.mocked(db.select).mockReset();
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   const authoredVersionRow = {
     id: 'ver-1',
@@ -667,14 +670,16 @@ describe('renderContractBlocksForClient', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectReturning([authoredVersionRow]) as never)
       .mockReturnValueOnce(selectReturning([templateRow]) as never);
-    const [bad, good] = await renderContractBlocksForClient(
-      [{ id: 'block-bad', blockType: 'contract', content: 'garbage' }, contractBlockFixture()],
+    const heading = { id: 'block-h', blockType: 'heading', content: { text: 'Intro', level: 2 } };
+    const [bad, good, h] = await renderContractBlocksForClient(
+      [{ id: 'block-bad', blockType: 'contract', content: 'garbage' }, contractBlockFixture(), heading],
       fixtureQuote(),
       () => '/unused'
     );
     expect((bad!.content as Record<string, unknown>).renderedHtml).toBeNull();
     expect((good!.content as Record<string, unknown>).templateName).toBe('MSA');
-    vi.restoreAllMocks();
+    // Non-contract siblings must pass through untouched (guards the blockType check).
+    expect(h).toEqual(heading);
   });
 
   it('leaves non-contract blocks unchanged and short-circuits without touching the db', async () => {
