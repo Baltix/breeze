@@ -56,21 +56,59 @@ function walk(dir: string): string[] {
 const rel = (file: string) => relative(REPO, file).split('\\').join('/');
 const inlineHits = (source: string) =>
   source.split('\n').flatMap((line, i) => (INLINE_FORMULA.some((re) => re.test(line)) ? [i + 1] : []));
+/** Catches a copy split across lines (`ROUND(\n  m / 60,\n  2)`), which the per-line scan misses. */
+const hasMultiLineCopy = (source: string) => {
+  const collapsed = source.replace(/\s+/g, ' ');
+  return INLINE_FORMULA.some((re) => re.test(collapsed));
+};
+
+/**
+ * The money paths inside a file that has several: each named block (from its
+ * anchor to the next top-level declaration) must itself call the helper, so a
+ * revert of one reader cannot hide behind another reader's call in the same file.
+ */
+const BLOCKS: Array<{ file: string; anchor: string; helper: RegExp }> = [
+  { file: 'apps/api/src/services/timeEntryService.ts', anchor: 'export async function getTimesheet(', helper: /\blaborAmount\(/ },
+  { file: 'apps/api/src/services/timeEntryService.ts', anchor: 'export async function getTicketBillingSummary(', helper: /\blaborAmountSql\(/ },
+  { file: 'apps/api/src/services/timeEntryService.ts', anchor: 'export async function listBillables(', helper: /\blaborAmount\(/ },
+  { file: 'apps/api/src/services/orgCurrencyService.ts', anchor: 'function laborSumSql(', helper: /\blaborAmountSql\(/ },
+  { file: 'apps/api/src/services/businessReports/technicianTimeReport.ts', anchor: 'const MONEY = ', helper: /\blaborAmountSql\(/ },
+  { file: 'apps/api/src/services/ticketApproval/gate.ts', anchor: 'export function entryAmountMinor(', helper: /\blaborAmount\(/ },
+  { file: 'apps/api/src/services/invoiceAssembly.ts', anchor: 'const entryHours = ', helper: /\blaborHours\(/ },
+];
+
+function block(source: string, anchor: string): string {
+  const start = source.indexOf(anchor);
+  if (start < 0) return '';
+  const rest = source.slice(start + anchor.length);
+  const next = rest.search(/\n(?:export |async |function |const |let |interface |type )/);
+  return anchor + (next < 0 ? rest : rest.slice(0, next));
+}
 
 describe('labour rule has one implementation (#9561)', () => {
   it.each(Object.entries(FORMER_COPIES))('%s routes through the shared helper', (file, helperCall) => {
     const source = readFileSync(join(REPO, file), 'utf8');
     expect(helperCall.test(source), `${file} must call the labour helper (${helperCall})`).toBe(true);
     expect(inlineHits(source), `${file} still carries an inline copy of the labour formula`).toEqual([]);
+    expect(hasMultiLineCopy(source), `${file} carries a multi-line inline copy of the labour formula`).toBe(false);
+  });
+
+  it.each(BLOCKS)('$anchor ($file) itself calls the helper', ({ file, anchor, helper }) => {
+    const body = block(readFileSync(join(REPO, file), 'utf8'), anchor);
+    expect(body, `anchor "${anchor}" not found in ${file} — update this test if it was renamed`).not.toBe('');
+    expect(helper.test(body), `${anchor} in ${file} must call ${helper}`).toBe(true);
   });
 
   it('no inline copy of the formula exists outside the helpers', () => {
     const offenders: string[] = [];
-    for (const root of ['apps/api/src', 'apps/web/src', 'packages/shared/src']) {
+    const roots = ['apps/api/src', 'apps/web/src', 'apps/portal/src', 'apps/mobile/src', 'packages/shared/src', 'ee'];
+    for (const root of roots) {
       for (const file of walk(join(REPO, root))) {
         const path = rel(file);
         if (HELPER_FILES.has(path)) continue;
-        for (const line of inlineHits(readFileSync(file, 'utf8'))) offenders.push(`${path}:${line}`);
+        const source = readFileSync(file, 'utf8');
+        for (const line of inlineHits(source)) offenders.push(`${path}:${line}`);
+        if (offenders.every((o) => !o.startsWith(`${path}:`)) && hasMultiLineCopy(source)) offenders.push(`${path} (multi-line)`);
       }
     }
     expect(offenders).toEqual([]);

@@ -24,7 +24,7 @@ export function laborBreakdown(
   t: (key: string, options?: Record<string, unknown>) => string,
   entry: LaborBreakdownEntry,
 ): string | null {
-  if (entry.endedAt == null || !entry.isBillable || entry.hourlyRate == null || !entry.currencyCode) return null;
+  if (entry.endedAt == null || !entry.isBillable || !entry.hourlyRate || !entry.currencyCode) return null;
   const minutes = billedLaborMinutes(entry);
   return t('tickets:ticketTimeBilling.laborBreakdown', {
     hours: laborHours(minutes),

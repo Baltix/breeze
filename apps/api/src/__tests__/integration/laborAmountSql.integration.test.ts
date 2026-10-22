@@ -8,13 +8,24 @@
  * by-design figures (25 min at 135.00/h = 0.42 h = 56.70), and the sweep
  * proves the shared `laborAmountSql` helper is value-identical to both copies
  * — and to the JS `laborAmount` — over every minute count in a working day.
+ * The last block runs the three REAL readers against seeded rows and asserts
+ * literal figures, so a call site that passed the wrong minutes term or scale
+ * to the helper would fail here too.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().mockResolvedValue(undefined) }));
+
 import { sql, type SQL } from 'drizzle-orm';
 import { laborAmount, laborHours } from '@breeze/shared';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { laborAmountSql, laborHoursSql, minorUnitScaleSql } from '../../services/currencySql';
+import { getTicketBillingSummary } from '../../services/timeEntryService';
+import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
+import { generateTechnicianTimeBillabilityReport } from '../../services/businessReports/technicianTimeReport';
+import type { TechnicianTimeSummary } from '@breeze/shared';
+import { ctx, insertSettledEntry, seedApprovalFixture } from './ticketApprovalFixtures';
 
 const RUN = !!process.env.DATABASE_URL;
 
@@ -79,5 +90,35 @@ describe.skipIf(!RUN)('labour rule in SQL (#9561)', () => {
     expect(await one(laborAmountSql(m, r, minorUnitScaleSql(sql`'JPY'::text`)))).toBe('330.00');
     expect(await one(laborAmountSql(m, r, 0))).toBe('330.00');
     expect(laborAmount(20, '1000.00', 'JPY')).toBe('330.00');
+  });
+});
+
+describe.skipIf(!RUN)('labour rule through the real SQL readers (#9561)', () => {
+  const CASES = TABLE.flatMap(([minutes, at135, at100]) => [
+    { minutes, rate: '135.00', amount: at135 },
+    { minutes, rate: '100.00', amount: at100 },
+  ]);
+
+  it.each(CASES)('$minutes min at $rate/h → $amount in the ticket summary, org-currency preflight and technician report', async (c) => {
+    const f = await seedApprovalFixture({ enabled: false });
+    await insertSettledEntry(f, c.minutes, { hourlyRate: c.rate });
+    const asTech = <T>(fn: () => Promise<T>) => withDbAccessContext(ctx(f), fn);
+
+    const summary = await asTech(() => getTicketBillingSummary(f.ticketId));
+    expect(summary.time.billableAmounts, 'ticket billing summary').toEqual([{ currencyCode: 'USD', amount: c.amount }]);
+
+    const impact = await asTech(() => getOrgCurrencyImpact(f.orgId, 'EUR', {
+      userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId, f.otherOrgId],
+    }));
+    const usd = impact.impactsByCurrency.find((g) => g.currencyCode === 'USD');
+    expect(usd?.billables.laborAmount, 'org-currency preflight').toBe(c.amount);
+
+    const report = await generateTechnicianTimeBillabilityReport(
+      { kind: 'organization', orgId: f.orgId },
+      { period: { kind: 'last_30_days' } },
+      { principalKind: 'system', scope: { version: 1, kind: 'unrestricted', orgId: f.orgId }, fingerprint: 'test', capturedAt: new Date() },
+    );
+    const s = report.summary as unknown as TechnicianTimeSummary;
+    expect(s.overall.billableValue, 'technician time report').toEqual([{ currencyCode: 'USD', amount: c.amount }]);
   });
 });
