@@ -576,6 +576,12 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 	if session != nil && targetSession == "" && runtime.GOOS == "windows" {
 		consoleID := sessionbroker.GetConsoleSessionID()
 
+		// A console at the sign-in screen loses to an active, signed-in RDP
+		// session that has a capable helper (#8434).
+		if alt := h.activeRemoteHelperOverSignInConsole(consoleID); alt != nil {
+			return alt
+		}
+
 		// If the best session IS the console and it's not disconnected, use it.
 		// Hot path — fires on every start_desktop. Info-level; flip
 		// `desktop_debug: true` in agent.yaml to ship. The "alternative",

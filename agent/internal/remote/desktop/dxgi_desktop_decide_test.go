@@ -32,3 +32,30 @@ func TestIsSecureDesktop(t *testing.T) {
 		})
 	}
 }
+
+func TestGDIAlreadyFollowsInputDesktop(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		gdiActive bool
+		follows   string
+		input     string
+		want      bool
+	}{
+		// The #9558 loop: the capture thread is stuck on Default, the input
+		// desktop is still Winlogon, and GDI's own thread is already there.
+		{"stuck on the same secure desktop", true, "Winlogon", "Winlogon", true},
+		{"case-insensitive", true, "Winlogon", "winlogon", true},
+		{"input moved on to another desktop", true, "Winlogon", "Screen-saver", false},
+		{"input back on Default", true, "Winlogon", "Default", false},
+		{"no GDI fallback to follow it", false, "Winlogon", "Winlogon", false},
+		{"never stuck", true, "", "Winlogon", false},
+		{"unreadable input name", true, "Winlogon", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := gdiAlreadyFollowsInputDesktop(tc.gdiActive, tc.follows, tc.input); got != tc.want {
+				t.Fatalf("gdiAlreadyFollowsInputDesktop(%v, %q, %q) = %v, want %v",
+					tc.gdiActive, tc.follows, tc.input, got, tc.want)
+			}
+		})
+	}
+}

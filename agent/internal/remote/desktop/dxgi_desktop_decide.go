@@ -15,3 +15,20 @@ func isSecureDesktop(desktopName string) bool {
 	}
 	return !strings.EqualFold(desktopName, "Default")
 }
+
+// gdiAlreadyFollowsInputDesktop reports whether a capture thread / input
+// desktop mismatch seen by checkDesktopSwitch is one that was already handled:
+// the calling thread failed to follow the input desktop to followsDesktop and
+// the GDI fallback's own thread attached there instead (#9558). Re-handling it
+// would close and rebuild the fallback, thread and all, every 500ms tick for as
+// long as the calling thread stays stuck.
+//
+// It never matches when there is no GDI fallback (nothing is following the
+// desktop), when followsDesktop is unset, or once the input desktop has moved
+// on to a different desktop, which is a real change.
+func gdiAlreadyFollowsInputDesktop(gdiActive bool, followsDesktop, inputName string) bool {
+	if !gdiActive || followsDesktop == "" || inputName == "" {
+		return false
+	}
+	return strings.EqualFold(followsDesktop, inputName)
+}
