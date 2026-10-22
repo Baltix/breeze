@@ -2064,6 +2064,10 @@
           "label": "Détail des vulnérabilités",
           "description": "Affiche à chaque connexion au portail de cette organisation les constats CVE de chaque appareil et leur gravité (ID CVE, description, gravité, score CVSS, disponibilité d’un correctif, statut). Cela révèle quelles machines sont vulnérables. N’est pas activé par Activer toute la visibilité."
         },
+        "enablePhysicalPlacement": {
+          "label": "Emplacement physique",
+          "description": "Montre à chaque connexion au portail de cette organisation où chaque appareil est physiquement installé (baie et salle). Cela révèle l'agencement physique de l'environnement. N’est pas activé par Activer toute la visibilité."
+        },
         "enableHourBlock": {
           "label": "Heures de support",
           "description": "Affiche les heures prépayées du forfait consommées et restantes dans la section Utilisation du support du client. Nécessite Utilisation du support. Non activé lorsque vous activez toute la visibilité."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
           "blocked_by_app_rule": "Bloquée par une règle d'application",
           "awaiting_manual_approval": "En attente d'approbation manuelle",
+          "explicitly_declined": "Refusé explicitement",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
           "ring_reference_invalid": "L'anneau de mise à jour de la stratégie est invalide",
           "device_not_in_org": "Appareil absent de cette organisation"
@@ -4398,7 +4403,9 @@
     "nMoreCurrencies_other": "+{{count}} devises",
     "incompletePriceBook": "Grille tarifaire incomplète",
     "marginUnavailable": "Marge indisponible",
-    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible"
+    "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
+    "marginUnknownMissingCost_one": "Marge inconnue — {{count}} composant n’a pas de coût",
+    "marginUnknownMissingCost_other": "Marge inconnue — {{count}} composants n’ont pas de coût"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catalogue de produits",
@@ -5374,6 +5381,8 @@
       "billingDescription": "Adresse fiscale et de facturation",
       "pax8": "Marché Pax8",
       "pax8Description": "Abonnements et commandes",
+      "cloudTenants": "Locataires cloud",
+      "cloudTenantsDescription": "Microsoft 365 et Google Workspace",
       "extensions": "Modules d'extension",
       "extensionsDescription": "Sections d'extensions tierces",
       "portalBranding": "Portail & Branding",
@@ -5700,16 +5709,12 @@
       "nameRequired": "Le nom de l’organisation est requis",
       "slugRequired": "Un slug est nécessaire",
       "slugFormat": "Utilisez uniquement les lettres minuscules, les chiffres et les traits d’union",
-      "maxDevicesRequired": "Ajoutez une limite maximale d’appareils",
-      "maxDevicesInteger": "Les appareils Max doivent être un nombre entier",
-      "maxDevicesMin": "Le maximum d’appareils doit être au moins 1",
       "contractEndAfterStart": "La fin du contrat doit avoir lieu à la date de début ou après"
     },
     "fields": {
       "name": "Nom de l’organisation",
       "slug": "Identifiant d’URL",
       "type": "Type d’organisation",
-      "maxDevices": "Appareils Max",
       "contractStart": "Début de contrat",
       "contractEnd": "Fin du contrat"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "Impossible de charger les préférences d'e-mail.",
     "saveFailed": "Impossible d'enregistrer les préférences d'e-mail.",
     "retry": "Réessayer"
+  },
+  "characterKeyShortcuts": {
+    "title": "Raccourcis à touche unique",
+    "description": "Raccourcis à une seule touche comme g puis d, c puis c, /, ? et les touches de la file de tickets. Désactivez-les s'ils entrent en conflit avec un lecteur d'écran ou la saisie vocale. Ctrl/Cmd+K n'est pas concerné.",
+    "label": "Activer les raccourcis à touche unique",
+    "enabledToast": "Raccourcis à touche unique activés",
+    "disabledToast": "Raccourcis à touche unique désactivés",
+    "saveFailed": "Impossible d'enregistrer les raccourcis à touche unique."
   }
 }

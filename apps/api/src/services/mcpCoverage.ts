@@ -142,6 +142,15 @@ export type McpExemptReason =
    */
   | 'human_only_tenant_restructure'
   /**
+   * "Force reboot now" (#8729): an immediate reboot that closes running apps
+   * and discards unsaved work on the device. Interactive user session only,
+   * MFA plus a single-use `device_force_reboot` step-up bound to the device,
+   * and a typed-hostname confirmation in the console. An agent-reachable tool
+   * would bypass exactly the human step this action exists to require;
+   * plain reboot stays reachable through the existing device-command tools.
+   */
+  | 'human_only_force_reboot'
+  /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
    * not a tool surface an AI agent calls (W05 gap triage).
@@ -375,6 +384,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'catalog/enrich.ts': { exempt: 'internal_plumbing', note: "AI copy-polish endpoint backing the catalog UI; the AI can draft copy and call manage_catalog directly. From #6795." },
   'catalog/pricing.ts': { tools: ['manage_catalog'] },
   'changes.ts': { tools: ['query_change_log'] },
+  'circuits.ts': { exempt: 'internal_plumbing', note: 'Circuits CRUD, termination and served sites (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   'cisHardening.ts': { tools: ['get_cis_compliance', 'get_cis_device_report', 'apply_cis_remediation'] },
   'clientAi/admin.ts': { exempt: 'addin_surface' },
   'clientAi/adminOrgs.ts': { exempt: 'addin_surface' },
@@ -393,6 +403,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'connectedApps.ts': { exempt: 'identity' },
   'connectionHealth.ts': { exempt: 'tool_in_later_wave', note: 'Connection health incidents: read-only panel feed (W2 UI); no MCP tool planned yet (#8844).' },
   'connectionHealthSettings.ts': { exempt: 'tool_in_later_wave', note: 'Customer-notice setting (partner default / org override, W5); no MCP tool planned yet (#8844).' },
+  'contracts/adopt.ts': { exempt: 'human_only_bulk_destructive', note: 'Adopt draft (#9346): moves every deliverable off a draft contract, re-links its documents, then deletes the draft. The single-item path (manage_deliverables update contractId) already has a tool.' },
+  'contracts/agreementRequests.ts': { exempt: 'human_only_legal_evidence', note: 'Record signed agreement (#8865 W1c): a named MSP user files a client\'s signature obtained elsewhere, with its evidence reference and optional signed copy. Like quote accept-on-behalf it has no AI tool by design -- an agent could fabricate a signed legal record.' },
   'contracts/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/cancel; the single-item equivalents already have tools.' },
   'contracts/contracts.ts': { tools: ['list_contracts', 'get_contract', 'manage_contracts'] },
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
@@ -412,6 +424,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devPush.ts': { exempt: 'internal_plumbing' },
   'devices/pamReconciliation.ts': { exempt: 'human_only_pam_reconciliation', note: 'Privileged-access recovery is a human operator decision requiring PAM approval, device execution permission, MFA policy and an audited reason. No AI reset tool: restoring elevation availability must not be initiated by an autonomous agent.' },
   'devices/actuateElevation.ts': { exempt: 'internal_plumbing', note: "PAM actuator is disabled by default in every env; request_elevation already covers the product path. From #6796." },
+  // #9234: the device-page button for the watchdog restart the AI tool already queues.
+  'devices/agentRecovery.ts': { tools: ['trigger_agent_restart'] },
   'devices/aiOrigin.ts': { gap: '#6780' },
   'devices/alerts.ts': { tools: ['manage_alerts'] },
   'devices/anomalies.ts': { gap: '#6777' },
@@ -446,6 +460,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
+  'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },
@@ -732,6 +747,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/mutations.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   // Shared permission middleware and response/error wrappers register no endpoints.
   'topology/operations.ts': { exempt: 'internal_plumbing' },
+  'topology/interfaceRole.ts': { exempt: 'internal_plumbing', note: 'WAN role mutation on a topology interface (W1-B, #8134): the spec defines no AI/MCP tool for circuits or the WAN role; not an AI surface in this wave.' },
   // Topology monitoring policy CRUD has no registered AI tool.
   'topology/policies.ts': { gap: '#6778' },
   'topology/presence.ts': { exempt: 'internal_plumbing', note: 'Site-gated presentation read of observed device location (site location W2, #7886). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP topology evidence unchanged, and aiPresenceIsolation.test.ts pins that no AI module reads presence.' },
@@ -742,6 +758,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { gap: '#6778' },
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { gap: '#6778' },
+  'flows.ts': { tools: ['list_flows', 'get_flow'] }, // Tool Catalog W03 (#5218): read-only list/detail; drafts are written via draft_flow.
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },

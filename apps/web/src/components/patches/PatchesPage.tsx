@@ -14,6 +14,7 @@ import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
 import UpdateRingForm, { type UpdateRingFormValues } from './UpdateRingForm';
 import RingSelector, { type UpdateRing } from './RingSelector';
 import SourceFilterChips from './SourceFilterChips';
+import type { LoadPatchDevices } from './PatchDevicesPopover';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '../../stores/orgStore';
@@ -86,6 +87,8 @@ const PATCH_FETCH_MAX_PAGES = 25;
 // keeps any single request short enough to finish well inside an edge-proxy
 // timeout, and gives each batch its own audit entry.
 const BULK_APPROVE_BATCH_SIZE = 200;
+
+interface LinkedPolicy { id: string; name: string; orgId: string | null }
 
 export default function PatchesPage() {
   const { t } = useTranslation('patches');
@@ -188,6 +191,8 @@ export default function PatchesPage() {
   const [modalInitialAction, setModalInitialAction] = useState<PatchApprovalAction>('approve');
   const [ringModalOpen, setRingModalOpen] = useState(false);
   const [ringSubmitting, setRingSubmitting] = useState(false);
+  const [pendingRingDelete, setPendingRingDelete] = useState<{ ring: UpdateRingItem; linked: LinkedPolicy[] } | null>(null);
+  const [ringDeleting, setRingDeleting] = useState(false);
   const [editingRing, setEditingRing] = useState<UpdateRingItem | null>(null);
 
   // Data
@@ -495,6 +500,22 @@ export default function PatchesPage() {
     }
   };
 
+  // #8728: hostnames behind a row's outstanding device count, one page at a
+  // time. fetchWithAuth adds the selected org as ?orgId=, so the names are
+  // scoped exactly like the count on the list.
+  const loadPatchDevices = useCallback<LoadPatchDevices>(async (patchId, page) => {
+    const response = await fetchWithAuth(`/patches/${patchId}/devices?limit=50&page=${page}`);
+    if (!response.ok) {
+      if (response.status === 401) void navigateTo('/login', { replace: true });
+      throw new Error(`Failed to load devices (${response.status})`);
+    }
+    const body = await response.json();
+    return {
+      devices: Array.isArray(body?.data) ? body.data : [],
+      total: Number(body?.pagination?.total) || 0
+    };
+  }, []);
+
   const handleBulkDecline = async (patchIds: string[]) => {
     // Same partner-level scope requirement as approve (see handleBulkApprove).
     if (!canManageRings) {
@@ -742,7 +763,7 @@ export default function PatchesPage() {
     }
   };
 
-  const handleRingDelete = async (ring: UpdateRingItem) => {
+  const executeRingDelete = async (ring: UpdateRingItem) => {
     try {
       await runAction({
         request: () => fetchWithAuth(`/update-rings/${ring.id}`, { method: 'DELETE' }),
@@ -754,6 +775,42 @@ export default function PatchesPage() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       setRingsError(err instanceof ActionError ? err.message : t('patchesPage.errors.deleteRing'));
+    }
+  };
+
+  // #8909: a deleted ring strands every config policy linked to it (patching is
+  // held until another ring is chosen). Ask the API who is affected BEFORE the
+  // destructive call; confirm only when something is linked.
+  const handleRingDelete = async (ring: UpdateRingItem) => {
+    let linked: LinkedPolicy[];
+    try {
+      const response = await fetchWithAuth(`/update-rings/${ring.id}/linked-policies`);
+      if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
+      if (!response.ok) throw new Error(`linked-policies ${response.status}`);
+      const body = await response.json();
+      if (!Array.isArray(body?.linkedPolicies)) throw new Error('linked-policies: malformed response');
+      linked = body.linkedPolicies;
+    } catch {
+      // Fail closed: without the linked-policy list we cannot warn, so do not delete.
+      showToast({ message: t('patchesPage.errors.checkRingLinks'), type: 'error' });
+      return;
+    }
+    if (linked.length === 0) {
+      await executeRingDelete(ring);
+      return;
+    }
+    setPendingRingDelete({ ring, linked });
+  };
+
+  const confirmRingDelete = async () => {
+    if (!pendingRingDelete) return;
+    const { ring } = pendingRingDelete;
+    setRingDeleting(true);
+    try {
+      await executeRingDelete(ring);
+    } finally {
+      setRingDeleting(false);
+      setPendingRingDelete(null);
     }
   };
 
@@ -931,6 +988,8 @@ export default function PatchesPage() {
             onUnapprove={handleUnapprove}
             onBulkApprove={handleBulkApprove}
             onBulkDecline={handleBulkDecline}
+            // The ring list (/update-rings/:id/patches) carries no device count.
+            loadPatchDevices={selectedRingId ? undefined : loadPatchDevices}
           />
         </>
       )}
@@ -956,6 +1015,34 @@ export default function PatchesPage() {
         }}
         onSubmit={handleApprovalSubmit}
       />
+
+      {/* Ring delete confirmation — only shown when config policies still link the ring (#8909) */}
+      <ConfirmDialog
+        open={pendingRingDelete !== null}
+        onClose={() => { if (!ringDeleting) setPendingRingDelete(null); }}
+        onConfirm={() => void confirmRingDelete()}
+        title={t('patchesPage.ringDelete.title', { name: pendingRingDelete?.ring.name ?? '' })}
+        message={
+          pendingRingDelete
+            ? t(
+                /* i18n-dynamic */ pendingRingDelete.linked.length === 1
+                  ? 'patchesPage.ringDelete.messageOne'
+                  : 'patchesPage.ringDelete.messageMany',
+                { count: pendingRingDelete.linked.length }
+              )
+            : ''
+        }
+        confirmLabel={t('patchesPage.ringDelete.confirm')}
+        variant="destructive"
+        isLoading={ringDeleting}
+        confirmTestId="confirm-delete-ring"
+      >
+        <ul className="mt-3 max-h-48 list-disc space-y-1 overflow-y-auto pl-5 text-sm">
+          {pendingRingDelete?.linked.map((p) => (
+            <li key={p.id}>{p.name}</li>
+          ))}
+        </ul>
+      </ConfirmDialog>
 
       {/* Scan confirmation — names the scope before POSTing /patches/scan */}
       <ConfirmDialog

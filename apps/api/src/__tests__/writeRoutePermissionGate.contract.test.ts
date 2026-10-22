@@ -251,6 +251,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/desktop-ws/connect/exchange': 'device credential: one-time connect code exchange, live access re-authorized',
   'POST /api/v1/desktop-ws/:id/viewer/ws-ticket': 'device credential: viewer access token + session access validation',
   'POST /api/v1/desktop-ws/:id/viewer/offer': 'device credential: viewer access token + session access validation',
+  'POST /api/v1/desktop-ws/:id/viewer/ice': 'device credential: viewer access token + session access validation',
   'POST /api/v1/desktop-ws/:id/viewer/lease/renew': 'device credential: viewer access token bound to session owner',
   // routes/devPush.ts
   'POST /api/v1/dev/push': 'equivalent check: devPushAuth wraps requirePermission(DEVICES_EXECUTE)+requireMfa for API key',
@@ -358,6 +359,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/system/setup-complete': 'own account: sets caller\'s own setupCompletedAt',
   // routes/tickets/emailWebhook.ts
   'POST /api/v1/webhooks/tickets/email-inbound': 'webhook: Inbound email provider HMAC verified via provider.verify',
+  // routes/topology/interfaceRole.ts
+  'PATCH /api/v1/topology/interfaces/:id/role': 'equivalent check: requireTopologySiteAccess(write) on the interface\'s own site via assertTopologySiteWrite; the site comes from the interface row, not a path param',
   // routes/topology/templateApplications.ts
   'POST /api/v1/topology/template-applications/preview': 'equivalent check: requireTopologySiteAccess(write) per site in service; writes preview journal',
   'POST /api/v1/topology/template-applications': 'equivalent check: requireTopologySiteAccess(write) re-checked per site at apply',

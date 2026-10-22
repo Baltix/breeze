@@ -82,7 +82,9 @@ describe('buildContractSpecsFromQuote', () => {
     expect(specs).toHaveLength(1);
     const c = specs[0]!;
     expect(c.intervalMonths).toBe(1);
-    expect(c.notes).toBe('Auto-created from accepted quote Q-1001');
+    // #9304: the auto-create path never writes provenance into notes; they
+    // are the MSP's own internal notes (#9347).
+    expect(c.notes).toBeNull();
     expect(c.billingTiming).toBe('advance');
     expect(c.orgId).toBe('org-1');
     expect(c.partnerId).toBe('partner-1');

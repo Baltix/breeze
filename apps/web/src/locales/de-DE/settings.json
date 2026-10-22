@@ -2064,6 +2064,10 @@
           "label": "Schwachstellen-Details",
           "description": "Zeigt allen Portal-Anmeldungen dieser Organisation die CVE-Funde jedes Geräts und deren Schweregrad (CVE-ID, Beschreibung, Schweregrad, CVSS-Wert, Patch-Verfügbarkeit, Status). Dadurch ist sichtbar, welche Rechner angreifbar sind. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
         },
+        "enablePhysicalPlacement": {
+          "label": "Physische Platzierung",
+          "description": "Zeigt jedem Portal-Login dieser Organisation, wo jedes Gerät physisch untergebracht ist (Rack und Raum). Das legt das physische Layout der Umgebung offen. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
+        },
         "enableHourBlock": {
           "label": "Support-Stunden",
           "description": "Zeigt im Bereich Support-Nutzung des Kunden die verbrauchten und verbleibenden Stunden des vorausbezahlten Stundenkontingents an. Erfordert Support-Nutzung. Wird durch „Alle Sichtbarkeiten aktivieren“ nicht eingeschaltet."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
           "blocked_by_app_rule": "Durch eine App-Regel blockiert",
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
+          "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
@@ -4398,7 +4403,9 @@
     "nMoreCurrencies_other": "+{{count}} Währungen",
     "incompletePriceBook": "Unvollständige Preisliste",
     "marginUnavailable": "Marge nicht verfügbar",
-    "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar"
+    "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
+    "marginUnknownMissingCost_one": "Marge unbekannt — {{count}} Komponente hat keine Kosten",
+    "marginUnknownMissingCost_other": "Marge unbekannt — {{count}} Komponenten haben keine Kosten"
   },
   "catalogSettingsPage": {
     "productCatalog": "Produktkatalog",
@@ -5374,6 +5381,8 @@
       "billingDescription": "Steuer- und Rechnungsadresse",
       "pax8": "Pax8-Marktplatz",
       "pax8Description": "Abonnements und Bestellungen",
+      "cloudTenants": "Cloud-Mandanten",
+      "cloudTenantsDescription": "Microsoft 365 und Google Workspace",
       "extensions": "Erweiterungen",
       "extensionsDescription": "Abschnitte von Drittanbieter-Erweiterungen",
       "portalBranding": "Portal & Branding",
@@ -5700,16 +5709,12 @@
       "nameRequired": "Der Name der Organisation ist erforderlich",
       "slugRequired": "Slug ist erforderlich",
       "slugFormat": "Verwenden Sie nur Kleinbuchstaben, Zahlen und Bindestriche",
-      "maxDevicesRequired": "Geben Sie ein maximales Gerätelimit ein",
-      "maxDevicesInteger": "Max. Geräte müssen eine ganze Zahl sein",
-      "maxDevicesMin": "Die maximale Anzahl an Geräten muss mindestens 1 betragen",
       "contractEndAfterStart": "Das Vertragsende muss am oder nach dem Startdatum liegen"
     },
     "fields": {
       "name": "Name der Organisation",
       "slug": "Schnecke",
       "type": "Organisationstyp",
-      "maxDevices": "Max. Geräte",
       "contractStart": "Vertragsbeginn",
       "contractEnd": "Vertragsende"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "E-Mail-Einstellungen konnten nicht geladen werden.",
     "saveFailed": "E-Mail-Einstellungen konnten nicht gespeichert werden.",
     "retry": "Erneut versuchen"
+  },
+  "characterKeyShortcuts": {
+    "title": "Einzeltasten-Kürzel",
+    "description": "Kürzel mit einer einzelnen Taste wie g dann d, c dann c, /, ? und die Tasten der Ticketwarteschlange. Deaktivieren, wenn sie mit einem Screenreader oder der Spracheingabe kollidieren. Strg/Cmd+K ist nicht betroffen.",
+    "label": "Einzeltasten-Kürzel aktivieren",
+    "enabledToast": "Einzeltasten-Kürzel aktiviert",
+    "disabledToast": "Einzeltasten-Kürzel deaktiviert",
+    "saveFailed": "Einzeltasten-Kürzel konnten nicht gespeichert werden."
   }
 }

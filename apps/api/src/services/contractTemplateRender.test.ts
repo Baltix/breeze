@@ -18,10 +18,12 @@ import {
   resolveAutoVariables,
   resolveQuoteAutoVariables,
   renderContextFromQuote,
+  renderContextFromRequest,
   substituteVariables,
   findUnresolvedVariables,
   renderContractBlocksForClient,
   loadContractPdfInputs,
+  loadTemplateVersionRenderData,
   type ContractBlockRenderData,
   type QuoteRow,
 } from './contractTemplateRender';
@@ -247,6 +249,47 @@ describe('renderContextFromQuote + resolveAutoVariables(ctx)', () => {
     expect(map).not.toHaveProperty('totals.monthly');
     expect(map).not.toHaveProperty('dates.expiry');
     expect(map['dates.effective']).toBe('Oct 01, 2026');
+  });
+  it('renderContextFromRequest yields a 4-key map with quote-only keys absent (#8865 W1b)', () => {
+    const ctx = renderContextFromRequest(
+      {
+        clientNameSnapshot: 'Acme Co',
+        clientAddressSnapshot: { line1: '1 Main St', city: 'Springfield', country: 'US' },
+        sellerSnapshot: { name: 'MSP LLC' },
+        renderLocale: null, documentLocale: null, effectiveDate: null,
+      },
+      { effectiveDate: '2026-10-01', currencyCode: 'USD' },
+    );
+    expect(ctx.quote).toBeUndefined();
+    const map = resolveAutoVariables(ctx);
+    expect(Object.keys(map).sort()).toEqual(['client.address', 'client.name', 'dates.effective', 'seller.name']);
+    for (const k of ['quote.number', 'quote.title', 'totals.one_time', 'totals.monthly', 'totals.annual', 'totals.total', 'dates.expiry']) {
+      expect(map).not.toHaveProperty(k);
+    }
+    expect(map).toEqual({
+      'client.name': 'Acme Co',
+      'client.address': '1 Main St, Springfield, US',
+      'seller.name': 'MSP LLC',
+      'dates.effective': 'Oct 01, 2026',
+    });
+  });
+  it('renderContextFromRequest locale precedence: render_locale > document_locale > en', () => {
+    const base = { clientNameSnapshot: 'A', clientAddressSnapshot: null, sellerSnapshot: null, effectiveDate: null };
+    const opts = { effectiveDate: '2026-10-01', currencyCode: 'EUR' };
+    expect(renderContextFromRequest({ ...base, renderLocale: 'fr-FR', documentLocale: 'de-DE' }, opts).renderLocale).toBe('fr-FR');
+    expect(renderContextFromRequest({ ...base, renderLocale: null, documentLocale: 'de-DE' }, opts).renderLocale).toBe('de-DE');
+    expect(renderContextFromRequest({ ...base, renderLocale: null, documentLocale: null }, opts).renderLocale).toBe('en');
+    expect(renderContextFromRequest({ ...base, renderLocale: null, documentLocale: null }, opts).currencyCode).toBe('EUR');
+  });
+  it('renderContextFromRequest: null snapshots fall back to empty strings; a sender-set effective_date beats the sign date', () => {
+    const ctx = renderContextFromRequest(
+      { clientNameSnapshot: null, clientAddressSnapshot: null, sellerSnapshot: null, renderLocale: null, documentLocale: null, effectiveDate: '2026-11-15' },
+      { effectiveDate: '2026-10-01', currencyCode: 'USD' },
+    );
+    expect(ctx.clientName).toBe('');
+    expect(ctx.sellerName).toBe('');
+    expect(ctx.clientAddress).toBeNull();
+    expect(resolveAutoVariables(ctx)['dates.effective']).toBe('Nov 15, 2026');
   });
   it('pdf: true routes money through formatMoneyForPdf for a quote context only', () => {
     const q = fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' });
@@ -752,5 +795,74 @@ describe('loadContractBlockAuthoring (admin-only editor fields)', () => {
     expect(map.size).toBe(0);
     expect(db.select).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadTemplateVersionRenderData (staff paths: caller-context read, #8865 W1c)', () => {
+  beforeEach(() => {
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(db.select).mockReset();
+  });
+
+  const publishedVersion = {
+    id: 'ver-9',
+    templateId: 'tmpl-9',
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>PO {{custom.po}}</p><script>x</script>',
+    sha256: 'vsha-9',
+    declaredVariables: [{ name: 'custom.po', kind: 'manual' }],
+    versionNumber: 3,
+  };
+
+  it('reads the version + template in the CALLER context — never system scope — and returns render data', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([publishedVersion]) as never)
+      .mockReturnValueOnce(selectReturning([{ id: 'tmpl-9', name: 'Master Services' }]) as never);
+
+    const data = await loadTemplateVersionRenderData('ver-9');
+
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(data).toEqual({
+      templateId: 'tmpl-9',
+      templateVersionId: 'ver-9',
+      sourceType: 'authored',
+      bodyHtml: '<p>PO {{custom.po}}</p>',
+      fileData: null,
+      versionSha256: 'vsha-9',
+      declaredVariables: [{ name: 'custom.po', kind: 'manual' }],
+      templateName: 'Master Services',
+      versionNumber: 3,
+    });
+  });
+
+  it('returns the uploaded bytes only when includeFileData is set', async () => {
+    const uploaded = { ...publishedVersion, sourceType: 'uploaded' as const, bodyHtml: null, fileData: Buffer.from('%PDF-1.4') };
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([uploaded]) as never)
+      .mockReturnValueOnce(selectReturning([{ id: 'tmpl-9', name: 'Scan' }]) as never);
+    const data = await loadTemplateVersionRenderData('ver-9', { includeFileData: true });
+    expect(data.fileData?.toString()).toBe('%PDF-1.4');
+    expect(data.bodyHtml).toBeNull();
+  });
+
+  it('404 VERSION_NOT_FOUND when the version is invisible to the caller', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectReturning([]) as never);
+    await expect(loadTemplateVersionRenderData('ver-x')).rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
+  });
+
+  it('404 VERSION_NOT_FOUND when the version is not published (draft)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectReturning([{ ...publishedVersion, status: 'draft' }]) as never);
+    await expect(loadTemplateVersionRenderData('ver-9')).rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('404 VERSION_NOT_FOUND when the parent template is invisible to the caller', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([publishedVersion]) as never)
+      .mockReturnValueOnce(selectReturning([]) as never);
+    await expect(loadTemplateVersionRenderData('ver-9')).rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
   });
 });

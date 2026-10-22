@@ -2064,6 +2064,10 @@
           "label": "Vulnerability detail",
           "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
         },
+        "enablePhysicalPlacement": {
+          "label": "Physical placement",
+          "description": "Show every portal login of this organization where each device is physically placed (rack and room). This reveals the physical layout of the environment. Not turned on by Enable all visibility."
+        },
         "enableHourBlock": {
           "label": "Support hours",
           "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Excluded by the ring's category rules",
           "blocked_by_app_rule": "Blocked by an app rule",
           "awaiting_manual_approval": "Awaiting manual approval",
+          "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",
           "ring_reference_invalid": "Policy's update ring is invalid",
           "device_not_in_org": "Device not in this organization"
@@ -4398,7 +4403,9 @@
     "nMoreCurrencies_other": "+{{count}} currencies",
     "incompletePriceBook": "Incomplete price book",
     "marginUnavailable": "Margin unavailable",
-    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable"
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+    "marginUnknownMissingCost_one": "Margin unknown — {{count}} component has no cost",
+    "marginUnknownMissingCost_other": "Margin unknown — {{count}} components have no cost"
   },
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",
@@ -5422,6 +5429,8 @@
       "billingDescription": "Tax and billing address",
       "pax8": "Pax8",
       "pax8Description": "Subscriptions and ordering",
+      "cloudTenants": "Cloud tenants",
+      "cloudTenantsDescription": "Microsoft 365 and Google Workspace",
       "extensions": "Extensions",
       "extensionsDescription": "Third-party extension sections",
       "portalBranding": "Portal & Branding",
@@ -5748,16 +5757,12 @@
       "nameRequired": "Organization name is required",
       "slugRequired": "Slug is required",
       "slugFormat": "Use lowercase letters, numbers, and hyphens only",
-      "maxDevicesRequired": "Enter a max device limit",
-      "maxDevicesInteger": "Max devices must be a whole number",
-      "maxDevicesMin": "Max devices must be at least 1",
       "contractEndAfterStart": "Contract end must be on or after start date"
     },
     "fields": {
       "name": "Organization name",
       "slug": "Slug",
       "type": "Organization type",
-      "maxDevices": "Max devices",
       "contractStart": "Contract start",
       "contractEnd": "Contract end"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "Could not load email preferences.",
     "saveFailed": "Could not save email preferences.",
     "retry": "Retry"
+  },
+  "characterKeyShortcuts": {
+    "title": "Character-key shortcuts",
+    "description": "Single-key shortcuts such as g then d, c then c, /, ? and the ticket queue keys. Turn off if they conflict with a screen reader or speech input. Ctrl/Cmd+K is not affected.",
+    "label": "Enable character-key shortcuts",
+    "enabledToast": "Character-key shortcuts turned on",
+    "disabledToast": "Character-key shortcuts turned off",
+    "saveFailed": "Could not save character-key shortcuts."
   }
 }

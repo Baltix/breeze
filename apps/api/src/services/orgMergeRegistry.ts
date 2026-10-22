@@ -181,6 +181,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
   tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
 
+  // Tool Catalog W03 (#5218). Two orgs may each own a flow with the same slug
+  // (`flows_org_slug_uq` is per-org), so a plain repoint aborts on 23505 and a
+  // dedupe-DELETE would silently destroy a draft.
+  flows: { kind: 'custom', note: 'repoint org_id; a loser flow whose slug collides with a survivor flow is renamed <slug>_m<n> first so no flow is silently dropped (flows_org_slug_uq); moved flows that name a renamed loser tool source have their step tool references rewritten (resolve phase, before mergeToolSources renames)' },
+
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
   // `leave-for-erasure` (org_id is trigger-immutable,
@@ -792,6 +797,11 @@ const REPOINT_TABLES: readonly string[] = [
   "agent_rollback_directives",
   // agent_rollback_events removed (#4371 fixup): reclassified 'leave-for-erasure'
   // in SPECIAL above — breeze_app has no UPDATE on this append-only table.
+  // agreement_request_recipients / agreement_requests (#8865 W1b): composite
+  // (…, org_id) FKs are DEFERRABLE, so parent and child org_id move in separate
+  // statements; the only unique key, (request_id, email), cannot collide across orgs.
+  "agreement_request_recipients",
+  "agreement_requests",
   "ai_action_plans",
   // ai_invocations (#7600 W02) is append-only, but its trigger admits exactly
   // the org_id-only UPDATE this policy issues while the loser org is fenced
@@ -883,6 +893,9 @@ const REPOINT_TABLES: readonly string[] = [
   "caller_verifications",
   "capacity_predictions",
   "capacity_thresholds",
+  "circuit_served_sites",
+  "circuit_terminations",
+  "circuits",
   "cis_baseline_results",
   "cis_baselines",
   "cis_remediation_actions",
@@ -1166,6 +1179,10 @@ const REPOINT_TABLES: readonly string[] = [
   // see its note there.
   "script_tags",
   "scripts",
+  // #6960 W03: plain repoint. Uniques are (device_id, vendor) and
+  // (org_id, vendor, vendor_endpoint_id) for vendor_only rows; vendor_endpoint_id is
+  // a Breeze row id (huntress_agents.id), unique across orgs, so no collision.
+  "security_agent_device_status",
   "security_policies",
   "security_posture_org_snapshots",
   "security_posture_snapshots",

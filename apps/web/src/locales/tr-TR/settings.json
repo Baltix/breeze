@@ -2064,6 +2064,10 @@
           "label": "Güvenlik açığı ayrıntısı",
           "description": "Bu kuruluşun her portal girişine, her cihazın CVE bulgularını ve önem derecesini gösterir (CVE kimliği, açıklama, önem derecesi, CVSS puanı, yama durumu, durum). Bu, hangi makinelerin savunmasız olduğunu ortaya çıkarır. Tüm görünürlüğü etkinleştir ile açılmaz."
         },
+        "enablePhysicalPlacement": {
+          "label": "Fiziksel yerleşim",
+          "description": "Bu kuruluşun her portal girişine, her cihazın fiziksel olarak nerede bulunduğunu (kabin ve oda) gösterir. Bu, ortamın fiziksel düzenini ortaya çıkarır. Tüm görünürlüğü etkinleştir ile açılmaz."
+        },
         "enableHourBlock": {
           "label": "Destek saatleri",
           "description": "Müşterinin destek kullanımı bölümünde ön ödemeli saat paketinin kullanılan ve kalan saatlerini gösterir. Destek kullanımı gerektirir. Tüm görünürlüğü etkinleştirdiğinizde açılmaz."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
+          "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
@@ -4398,7 +4403,9 @@
     "nMoreCurrencies_other": "+{{count}} para birimi",
     "incompletePriceBook": "Eksik fiyat listesi",
     "marginUnavailable": "Marj kullanılamıyor",
-    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor"
+    "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
+    "marginUnknownMissingCost_one": "Marj bilinmiyor — {{count}} bileşenin maliyeti yok",
+    "marginUnknownMissingCost_other": "Marj bilinmiyor — {{count}} bileşenin maliyeti yok"
   },
   "catalogSettingsPage": {
     "productCatalog": "Ürün Kataloğu",
@@ -5427,6 +5434,8 @@
       "billingDescription": "Vergi ve fatura adresi",
       "pax8": "Pax8",
       "pax8Description": "Abonelikler ve sipariş",
+      "cloudTenants": "Bulut kiracıları",
+      "cloudTenantsDescription": "Microsoft 365 ve Google Workspace",
       "extensions": "Uzantılar",
       "extensionsDescription": "Üçüncü taraf uzantı bölümleri",
       "portalBranding": "Portal ve Markalama",
@@ -5753,16 +5762,12 @@
       "nameRequired": "Kuruluş adı gerekli",
       "slugRequired": "Bilgi notu gerekli",
       "slugFormat": "Yalnızca küçük harf, rakam ve kısa çizgi kullanın",
-      "maxDevicesRequired": "Maksimum cihaz sınırını girin",
-      "maxDevicesInteger": "Maksimum cihaz tam sayı olmalıdır",
-      "maxDevicesMin": "Maksimum cihaz sayısı en az 1 olmalıdır",
       "contractEndAfterStart": "Sözleşme sonu başlangıç tarihinde veya sonrasında olmalıdır"
     },
     "fields": {
       "name": "Kuruluş adı",
       "slug": "Sümüklüböcek",
       "type": "Kuruluş türü",
-      "maxDevices": "Maksimum cihaz sayısı",
       "contractStart": "Sözleşme başlangıcı",
       "contractEnd": "Sözleşme sonu"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "E-posta tercihleri yüklenemedi.",
     "saveFailed": "E-posta tercihleri kaydedilemedi.",
     "retry": "Yeniden dene"
+  },
+  "characterKeyShortcuts": {
+    "title": "Tek tuşlu kısayollar",
+    "description": "g ardından d, c ardından c, /, ? ve bilet kuyruğu tuşları gibi tek tuşlu kısayollar. Ekran okuyucu veya sesle girişle çakışıyorsa kapatın. Ctrl/Cmd+K etkilenmez.",
+    "label": "Tek tuşlu kısayolları etkinleştir",
+    "enabledToast": "Tek tuşlu kısayollar açıldı",
+    "disabledToast": "Tek tuşlu kısayollar kapatıldı",
+    "saveFailed": "Tek tuşlu kısayollar kaydedilemedi."
   }
 }

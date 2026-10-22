@@ -36,9 +36,11 @@ export * from './authenticator';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
+export * from './relatedContracts';
 export * from './workTypes';
 export * from './mlFeedback';
 export * from './quotes';
+export * from './agreementRequests';
 export * from './contractTemplates';
 export * from './scriptProposals';
 export * from './maintenanceWindow';
@@ -433,6 +435,14 @@ export const vpnProviderSchema = z.enum([
   'zerotier',
   'openvpn',
   'cloudflare-warp',
+  // Enterprise VPN / SSE clients (#8763). Closed enum: an API older than the
+  // agent drops entries with a provider it doesn't know (per-entry salvage in
+  // routes/agents/inventory.ts), so ship the API before promoting the agent.
+  'zscaler',
+  'globalprotect',
+  'cisco-secure-client',
+  'forticlient',
+  'netskope',
   'generic'
 ]);
 
@@ -1118,17 +1128,22 @@ export {
   listDeliverablesQuerySchema,
   reportRunEvidenceRefSchema,
   documentEvidenceRefSchema,
+  contractDocumentEvidenceRefSchema,
   evidenceRefSchema,
   addEvidenceSchema,
   deliverOccurrenceSchema,
   waiveOccurrenceSchema,
   rescheduleOccurrenceSchema,
+  bulkRescheduleOccurrencesSchema,
   listOccurrencesQuerySchema,
+  moveDeliverablesSchema,
+  type MoveDeliverablesInput,
   type CreateDeliverableInput,
   type UpdateDeliverableInput,
   type DeliverOccurrenceInput,
   type WaiveOccurrenceInput,
   type RescheduleOccurrenceInput,
+  type BulkRescheduleOccurrencesInput,
   type AddEvidenceInput,
   type EvidenceRef,
 } from './serviceDeliverables';
@@ -1150,6 +1165,10 @@ export {
   checklistTemplateItemReorderSchema,
   listChecklistTemplatesQuerySchema,
   applyChecklistTemplateSchema,
+  saveChecklistAsTemplateSchema,
+  duplicateChecklistTemplateSchema,
+  type SaveChecklistAsTemplateInput,
+  type DuplicateChecklistTemplateInput,
   type ChecklistTemplateOwnerScope,
   type CreateChecklistTemplateInput,
   type UpdateChecklistTemplateInput,
@@ -1168,6 +1187,7 @@ export {
   listTemplateSetsQuerySchema,
   applyTemplateSetSchema,
   MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
   type ManagedEvidenceReportType,
   type CreateTemplateItemInput,
   type UpdateTemplateItemInput,
@@ -1221,6 +1241,9 @@ export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topo
 export * from './topologyPhysical';
 export * from './topologyPhysicalNormalized';
 export * from './topologyUnifiNormalized';
+export * from './topologyUnifiV2';
+export * from './topologyUnifiV2Normalized';
+export { canonicalizeUnifiResourceV2 } from './topologyUnifiV2Canonical';
 export { canonicalizeAdjacencyReport, canonicalizeAdjacencyScope, canonicalizeUnifiResource } from './topologyPhysicalCanonical';
 export type { AdjacencyDigestIdentity, UnifiDigestIdentity } from './topologyPhysicalCanonical';
 
@@ -1381,6 +1404,7 @@ export * from './aiModelOptions';
 export * from './aiModelChoice';
 export * from './aiModelRegistryApi';
 export * from './autopay';
+export * from './flows';
 export * from './trustCenter';
 export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';

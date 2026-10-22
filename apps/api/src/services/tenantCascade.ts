@@ -260,6 +260,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'action_intents',
   'agent_health_observations',
   'agent_logs',
+  // agreement_request_recipients / agreement_requests (#8865 W1b): children
+  // before parent (recipients → requests is a composite ON DELETE CASCADE FK).
+  // contract_documents.agreement_request_id → agreement_requests is ON DELETE
+  // SET NULL, so a list position ahead of contract_documents is safe;
+  // topologicalCascadeOrder() deletes contract_documents first regardless.
+  'agreement_request_recipients',
+  'agreement_requests',
   'ai_action_plans',
   // ai_agent_circuit_state / ai_agent_fix_watches (Wave 6 PR 2, #3828): sort
   // here alphabetically (before ai_agent_runs) even though
@@ -494,6 +501,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'capacity_predictions',
   'capacity_thresholds',
   'catalog_item_org_pricing',
+  'circuit_served_sites',
+  'circuit_terminations',
+  'circuits',
   'cis_baseline_results',
   'cis_baselines',
   'cis_remediation_actions',
@@ -668,6 +678,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
+  // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
+  // child-before-parent constraint of its own.
+  'flows',
   'google_workspace_connections',
   'group_membership_log',
   // W03 Task 12 (#6859): org-scoped, no device_id — the retirement recovery
@@ -886,6 +900,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'script_proposals',
   'script_tags',
   'scripts',
+  // #6960 W03: per-(device, vendor) security-agent coverage. Composite
+  // (device_id, org_id) FK -> devices ON DELETE CASCADE; policy_id -> software_policies
+  // ON DELETE SET NULL. Topological order handles the FKs at runtime.
+  'security_agent_device_status',
   'security_policies',
   'security_posture_org_snapshots',
   'security_posture_snapshots',

@@ -2064,6 +2064,10 @@
           "label": "Detalle de vulnerabilidades",
           "description": "Muestra a cada inicio de sesión del portal de esta organización los hallazgos CVE de cada dispositivo y su gravedad (ID de CVE, descripción, gravedad, puntaje CVSS, disponibilidad de parche, estado). Esto revela qué equipos son vulnerables. No se activa con Activar toda la visibilidad."
         },
+        "enablePhysicalPlacement": {
+          "label": "Ubicación física",
+          "description": "Muestra a cada inicio de sesión del portal de esta organización dónde está instalado físicamente cada dispositivo (rack y sala). Esto revela la disposición física del entorno. No se activa con Activar toda la visibilidad."
+        },
         "enableHourBlock": {
           "label": "Horas de soporte",
           "description": "Muestra las horas prepagadas del bloque usadas y restantes dentro de la sección de uso de soporte del cliente. Requiere Uso de soporte. No se activa al habilitar toda la visibilidad."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Excluida por las reglas de categoría del anillo",
           "blocked_by_app_rule": "Bloqueada por una regla de aplicación",
           "awaiting_manual_approval": "En espera de aprobación manual",
+          "explicitly_declined": "Rechazado explícitamente",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
           "ring_reference_invalid": "El anillo de actualización de la directiva no es válido",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
@@ -4398,7 +4403,9 @@
     "nMoreCurrencies_other": "+{{count}} monedas",
     "incompletePriceBook": "Lista de precios incompleta",
     "marginUnavailable": "Margen no disponible",
-    "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible"
+    "marginUnavailableCostIn": "Costo en {{currency}} — margen no disponible",
+    "marginUnknownMissingCost_one": "Margen desconocido — {{count}} componente no tiene costo",
+    "marginUnknownMissingCost_other": "Margen desconocido — {{count}} componentes no tienen costo"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catálogo de productos",
@@ -5374,6 +5381,8 @@
       "billingDescription": "Dirección fiscal y de facturación",
       "pax8": "Marketplace Pax8",
       "pax8Description": "Suscripciones y pedidos",
+      "cloudTenants": "Inquilinos en la nube",
+      "cloudTenantsDescription": "Microsoft 365 y Google Workspace",
       "extensions": "Extensiones",
       "extensionsDescription": "Secciones de extensiones de terceros",
       "portalBranding": "Portal y marca",
@@ -5700,16 +5709,12 @@
       "nameRequired": "El nombre de la organización es obligatorio.",
       "slugRequired": "Se requiere babosa",
       "slugFormat": "Utilice únicamente letras minúsculas, números y scripts",
-      "maxDevicesRequired": "Ingrese un límite máximo de dispositivo",
-      "maxDevicesInteger": "El número máximo de dispositivos debe ser un número entero",
-      "maxDevicesMin": "El número máximo de dispositivos debe ser al menos 1",
       "contractEndAfterStart": "La finalización del contrato debe ser en o después de la fecha de inicio."
     },
     "fields": {
       "name": "Nombre de la organización",
       "slug": "Slug",
       "type": "Tipo de organización",
-      "maxDevices": "Dispositivos máximos",
       "contractStart": "Inicio de contrato",
       "contractEnd": "Fin del contrato"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "No se pudieron cargar las preferencias de correo.",
     "saveFailed": "No se pudieron guardar las preferencias de correo.",
     "retry": "Reintentar"
+  },
+  "characterKeyShortcuts": {
+    "title": "Atajos de una sola tecla",
+    "description": "Atajos de una sola tecla como g y luego d, c y luego c, /, ? y las teclas de la cola de tickets. Desactívalos si entran en conflicto con un lector de pantalla o la entrada por voz. Ctrl/Cmd+K no se ve afectado.",
+    "label": "Activar los atajos de una sola tecla",
+    "enabledToast": "Atajos de una sola tecla activados",
+    "disabledToast": "Atajos de una sola tecla desactivados",
+    "saveFailed": "No se pudieron guardar los atajos de una sola tecla."
   }
 }

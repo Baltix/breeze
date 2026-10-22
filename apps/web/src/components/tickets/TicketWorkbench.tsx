@@ -58,6 +58,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { EntityLink } from '@/components/shared/EntityLink';
+import { TicketDeviceEditor } from './TicketDeviceEditor';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -267,6 +268,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // (or a failed/forbidden load) simply hides the picker.
   const [cannedTemplates, setCannedTemplates] = useState<CannedResponse[]>([]);
   const agentName = useAuthStore((s) => s.user?.name) ?? '';
+  // #9180: offer "all organizations" when saving checklist steps as a template.
+  // UI hint only — the API re-checks canManagePartnerWidePolicies.
+  // Checklists are partner/system-scope only, so this flag alone is the gate.
+  const canSavePartnerWideChecklist = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
   const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -1711,7 +1716,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 </div>
               )}
             </div>
-            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
+            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} canSavePartnerWide={canSavePartnerWideChecklist} />
             <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}
@@ -1856,17 +1861,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       ) : (
                         <span>{t('ticketWorkbench.device.none')}</span>
                       )}
-                      {ticket.deviceId && (
-                        <button
-                          type="button"
-                          data-testid="ticket-workbench-device-unlink"
-                          className="hover:text-destructive"
-                          onClick={() => handleFieldSave({ deviceId: null })}
-                        >
-                          {t('ticketWorkbench.device.unlink')}
-                        </button>
-                      )}
                     </div>
+                    <TicketDeviceEditor
+                      orgId={ticket.orgId}
+                      hasDevice={!!ticket.deviceId}
+                      hasAssignee={!!ticket.assignedTo}
+                      onSelect={(deviceId) => handleFieldSave({ deviceId })}
+                      onUnlink={() => handleFieldSave({ deviceId: null })}
+                    />
                   </dd>
                 </div>
                 {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.waitingOn')}</dt><dd>{ticket.pendingReason}</dd></div>}

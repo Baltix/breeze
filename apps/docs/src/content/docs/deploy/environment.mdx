@@ -119,7 +119,7 @@ Together, these detect and reclaim database connections stuck at session start (
 | `APPLE_APP_ATTEST_ENVIRONMENT` | `production` | | Which App Attest environment's attestations are accepted. Only the exact value `development` opts into accepting development-build attestations; anything else (a typo, a stray space) is treated as `production` and logs a warning — the wrong value can only ever reject a genuine attestation, never admit a forged one. |
 | `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
 | `AGENT_ENROLL_RATE_LIMIT` | `10` | | Agent enrollments allowed per source IP per window on `POST /api/v1/agents/enroll`. Machines behind one NAT address share the bucket, so raise it before enrolling a site with more than ~10 machines at once. Must be a positive integer (the API refuses to boot otherwise) |
-| `AGENT_ENROLL_RATE_WINDOW_SECONDS` | `60` | | Window, in seconds, for `AGENT_ENROLL_RATE_LIMIT` |
+| `AGENT_ENROLL_RATE_WINDOW_SECONDS` | `60` | | Window, in seconds, for `AGENT_ENROLL_RATE_LIMIT`. Maximum 230 (it is the `Retry-After` agents are told to wait) |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
 | `PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR` | `1200` | | Ticket writes (create, update, status, assign, comment) per hour per service principal on the Partner API, still capped by the key's own rate limit. Ticket writes have their own bucket, separate from the 120-per-hour provisioning writes. v0.122.1+ |
@@ -334,6 +334,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `RESTORE_POINT_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep System Restore checkpoint attempts (the device's System Restore tab), clamped to 1–365. An attempt still awaiting the device is kept until its command can no longer report back, whatever this is set to |
 | `RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
 | `RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per sweep, per nightly run |
+| `WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | Days to keep delivered and failed webhook delivery records, clamped to 1–365. Pending and retrying deliveries are never deleted |
+| `WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
 | `SNMP_METRICS_RETENTION_DAYS` | `7` | Days to keep raw SNMP-polled metrics, clamped to 1–365 |
 | `SNMP_METRICS_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `SNMP_METRICS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
@@ -471,7 +474,9 @@ results, event logs, token rotation and uninstall are never refused.
 `observe` is the default: the API computes everything and counts what it
 *would* refuse (`breeze_admission_decisions_total{outcome="would_shed"}`) but
 refuses nothing. Switch to `enforce` once those counters look right for your
-fleet. `off` disables it.
+fleet. `off` disables it. `breeze_admission_rise_suppressed_total` counts the
+short spikes that would have raised the level if it did not require
+sustained pressure.
 
 Any database pool-acquire timeout or RLS-prologue timeout in the last 30
 seconds holds the level at 2 or higher and blocks recovery below it. Only
@@ -481,9 +486,11 @@ requests to the WebSocket path are not counted against the connection budget.
 | Variable | Default | Description |
 |---|---|---|
 | `BREEZE_ADMISSION_MODE` | `observe` | `off`, `observe` or `enforce`. |
-| `BREEZE_ADMISSION_LAG_MS` | `100,250,600` | Median event-loop lag (ms) that raises the level to 1, 2 and 3. |
-| `BREEZE_ADMISSION_DB_WAIT_MS` | `75,200,600` | Time requests wait for a database connection (ms) that raises the level to 1, 2 and 3. |
-| `BREEZE_ADMISSION_EMERGENCY_MS` | `1000` | A single stall, or a database wait, this long jumps straight to level 3. |
+| `BREEZE_ADMISSION_LAG_MS` | `200,250,600` | Median event-loop lag (ms) that raises the level to 1, 2 and 3. |
+| `BREEZE_ADMISSION_DB_WAIT_MS` | `150,200,600` | Time requests wait for a database connection (ms) that raises the level to 1, 2 and 3. |
+| `BREEZE_ADMISSION_RISE_TICKS` | `3` | Consecutive one-second checks a signal must stay over a threshold before the level rises (1–10). A single blip never raises the level. |
+| `BREEZE_ADMISSION_LEVEL1_HOLD_MS` | `5000` | How long level 1 stays on once both signals are below 60 % of their level-1 thresholds (1000–60000). Levels 2 and 3 step down after 15 seconds. |
+| `BREEZE_ADMISSION_EMERGENCY_MS` | `1000` | A single stall, or a database wait, this long jumps straight to level 3, without waiting for `BREEZE_ADMISSION_RISE_TICKS`. |
 | `BREEZE_ADMISSION_BULK_MAX_IN_FLIGHT` | `15` | Inventory-type uploads processed at once. Applies in `enforce` mode only; `observe` counts but never refuses. |
 | `BREEZE_ADMISSION_WS_RATE_PER_SEC` | `10` | Agent WebSocket connections accepted per second at level 0 (halved at 1, a fifth at 2, a twentieth at 3). |
 | `BREEZE_ADMISSION_WS_BURST` | `20` | How many WebSocket connections can arrive at once before pacing starts. |
@@ -845,6 +852,10 @@ Both variables are validated when the API starts. An invalid mode or an unknown 
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `true` | In production, Tier 3+ tools require the `ai:execute_admin` scope. Set to `false` to fall back to `ai:execute`. No effect outside production. |
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | — | Comma-separated allowed Tier 3 tools (empty = deny all) |
 | `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge (current plus required `mcp:*` scopes) instead of HTTP 200. Never applies to API-key callers, tool-domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [MCP Server](/features/mcp-server/#authentication-challenges). |
+| `MCP_STATELESS_ENABLED` | `false` | When `true`, `POST /api/v1/mcp/sse` also speaks the stateless `2026-07-28` MCP protocol alongside the legacy `initialize` + `Mcp-Session-Id` era. Off by default; a stateless request is then refused with HTTP 400 (`-32600`) and dual-era clients fall back to `initialize`. The API refuses to boot on a non-boolean value. See [MCP Server](/features/mcp-server/#protocol-2026-07-28-stateless). |
+| `MCP_HEADER_MISMATCH_ALERT_THRESHOLD` | `50` | Stateless requests whose `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is missing or disagrees with the request body are refused with `-32020`. Per API process and per 60-second window: when this many true header/body mismatches occur within one window, one Sentry warning is raised for that window. Read at startup. |
+| `OAUTH_CIMD_ENABLED` | `false` | Accept Client ID Metadata Documents: an OAuth client may use an https URL as its `client_id` and the authorization server fetches its metadata document. Works next to Dynamic Client Registration. Needs `MCP_OAUTH_ENABLED=true`. The API refuses to boot on a non-boolean value. See [MCP Server](/features/mcp-server/#client-id-metadata-documents-cimd). |
+| `OAUTH_CIMD_ALLOWED_HOSTS` | (empty) | Optional comma-separated hostnames, or `.suffix` entries meaning any subdomain of the suffix (for example `client.example.com,.example.org`), allowed to publish CIMD documents. Unset means any public https host. The API refuses to boot on a malformed entry (scheme, path, port, wildcard or empty item). A change takes effect when the API restarts. |
 | `MCP_UNATTENDED_TIER3_PRINCIPALS` | — | Operator opt-in, empty = nobody. By default every Tier 3 tool/action (and `collect_evidence`) is denied over MCP with `MCP_APPROVAL_REQUIRED` because MCP has no interactive approval step. Comma-separated `api_key:<api key id>` / `oauth_client_user:<client_id>/<user id>` / `partner_sp:<partner service principal id>` entries (OAuth binds client AND user; a shared client_id alone never qualifies; a `partner_sp` entry names the principal, so key rotation keeps it, and like an OAuth entry it applies in every org the principal reaches) lift only that deny, only for those principals (trusted unattended agents). `ai:execute`, `ai:execute_admin` (production), `MCP_EXECUTE_TOOL_ALLOWLIST` (production), RBAC, rate limits, the Tier 3 execution ledger and the audit log still apply, and `collect_evidence` is gated as Tier 3. Tier 4, tenant (BYO MCP) tools and the onboarding bootstrap tools stay approval-only. At startup the API logs a WARN listing the configured principals, and a separate WARN for any entry that is not well formed (it can never match). Each bypassed call's audit row carries `approvalBypass: "unattended_principal"` and `approvalBypassPrincipal` (the matched entry). |
 
 ## Cloudflare mTLS
@@ -952,13 +963,15 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 
 ## Customer Microsoft 365 Graph-read consent (optional)
 
-This feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when you turn the feature on. Concretely, the API **refuses to boot only when `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=true` *and* one of the required variables is missing or malformed**; while the flag is off (or absent) these variables are never parsed and any values you set are ignored.
+This feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when you turn the feature on. Concretely, the API **refuses to boot when either `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=true` or `M365_GRAPH_READ_TOOLS_ENABLED=true` *and* one of the required variables is missing or malformed**; while both flags are off (or absent) these variables are never parsed and any values you set are ignored.
 
 Customer Graph-read lets a customer administrator grant read-only Microsoft Graph consent to Breeze's dedicated multi-tenant application without handing you a reusable secret. The Entra certificate and Key Vault access live entirely inside an isolated [executor sidecar](/deploy/production/) — the API holds only an opaque, version-pinned reference and a private key it uses to sign short-lived internal requests to that sidecar. See [Customer Graph Read](/features/identity-integrations/#customer-graph-read-recommended-for-read-only-inventory) for the admin-facing side.
 
 | Variable | Required when enabled | Format / example | Meaning |
 |---|---|---|---|
-| `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for **new** consent initiation only. Existing connection status, retest, and disconnect flows are independent of it. When `false`, none of the variables below are validated. |
+| `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for **new** consent initiation only. Existing connection status, retest, and disconnect flows are independent of it. When `false` (and `M365_GRAPH_READ_TOOLS_ENABLED` is also off), none of the variables below are validated. |
+| `M365_GRAPH_READ_TOOLS_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Independent switch for the six read-only `m365_query_*` AI tools. Separate from onboarding: you can run the tools without allowing new consent. Turning it on forces full validation of every variable below at boot, including the executor settings. |
+| `M365_GRAPH_READ_TOOLS_ORG_IDS` | Yes, when `M365_GRAPH_READ_TOOLS_ENABLED` is on | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations get the `m365_query_*` tools. Boot fails if the tools flag is on and this is empty or malformed. Leave empty while the flag is off. |
 | `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS` | Yes | Literal `*` or comma-separated canonical org UUIDs (e.g. `*` or `1111...,2222...`) | Which Breeze organizations may start consent. `*` = all organizations; otherwise an allowlist of canonical UUIDs. Boot fails if enabled and this is empty. |
 | `M365_CUSTOMER_GRAPH_READ_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the shared multi-tenant Graph-read app. |
 | `M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION` | Yes | Exactly 32 lowercase hex characters | Pins which stored credential version the executor must use. Must equal the version segment of `M365_CUSTOMER_GRAPH_READ_VAULT_REF`. |
@@ -1011,7 +1024,7 @@ These are read by the **`m365-graph-read-executor` sidecar**, not the API. They 
 
 ## Customer Microsoft 365 Graph-actions (write) executor (optional)
 
-Like Graph-read above, this feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`; while the flag is off (or absent) these variables are never parsed and any values you set are ignored.
+Like Graph-read above, this feature is **off by default and safe to leave unset** — every variable below stays empty in a normal deployment. The API only reads and validates them when `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true` or `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED=true`; while both flags are off (or absent) these variables are never parsed and any values you set are ignored.
 
 Where Graph-read is read-only inventory, Graph-actions authorises **write** operations against a customer's Microsoft 365 tenant — the identity actions the AI can propose, such as resetting a user's password, disabling a user, or changing mailbox rules. Those tools are Tier 3, so they still require human approval before anything executes (see [AI Risk Engine → Approval workflow](/features/ai/#approval-workflow)).
 
@@ -1019,6 +1032,8 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 
 | Variable | Required when enabled | Format / example | Meaning |
 |---|---|---|---|
+| `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for **new** Graph-actions consent initiation (the **Step 2 · Admin actions** card). Independent of `M365_GRAPH_ACTIONS_TOOLS_ENABLED`; turning on either one forces full validation of the variables below at boot. In production, one of `PUBLIC_URL`, `PUBLIC_APP_URL`, or `PUBLIC_API_URL` must be set so the consent callback origin can be derived. |
+| `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS` | Yes, when onboarding is on | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations may start Graph-actions consent. Boot fails if onboarding is on and this is empty or malformed. |
 | `M365_GRAPH_ACTIONS_TOOLS_ENABLED` | — (the switch) | `true` / `false`, `1` / `0`, `yes` / `no`, `on` / `off` (default `false`) | Master switch for the M365 write-action tools. When `false`, none of the variables below are validated and the write tools are unavailable. **From v0.106.0 a value outside the list above stops the API from starting** (it was previously read as "off", silently leaving the write tools dark), and turning it on additionally requires `APP_ENCRYPTION_KEY_ID`. |
 | `M365_GRAPH_ACTIONS_TOOLS_ORG_IDS` | Yes | Literal `*` or comma-separated canonical org UUIDs | Which Breeze organizations may use M365 write actions. `*` = all organizations; otherwise an allowlist. Leave empty while the feature is off. |
 | `M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the multi-tenant Graph-actions app. |
@@ -1040,6 +1055,27 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 <Aside type="caution" title="Map new variables into the api service">
   As with every optional block above, a value in `.env` is necessary but **not sufficient** on a custom Compose file — each variable must also appear in the `api` service's `environment:` block, or it reaches the container empty and an "enabled" deploy fails to boot.
 </Aside>
+
+
+## Microsoft 365 communications (delegated, optional)
+
+Off by default and safe to leave unset. This feature works per **user** rather than per organization, so its allowlists are lists of Breeze **user** UUIDs. The API reads and validates the variables below only when `M365_COMMS_ONBOARDING_ENABLED` or `M365_COMMS_TOOLS_ENABLED` is truthy; otherwise they are ignored.
+
+| Variable | Required when enabled | Format / example | Meaning |
+|---|---|---|---|
+| `M365_COMMS_ONBOARDING_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Master switch for new delegated-communications consent initiation. |
+| `M365_COMMS_ONBOARDING_USER_IDS` | Yes, when onboarding is on | Literal `*` or comma-separated canonical user UUIDs | Which Breeze users may start consent. A malformed entry fails boot rather than being dropped. |
+| `M365_COMMS_TOOLS_ENABLED` | — (the switch) | `true` / `false` (default `false`) | Switch for the delegated communications AI tools. Independent of onboarding. |
+| `M365_COMMS_TOOLS_USER_IDS` | Yes, when tools are on | Literal `*` or comma-separated canonical user UUIDs | Which Breeze users get the tools. |
+| `M365_COMMS_CLIENT_ID` | Yes | Canonical UUID | Entra application (client) ID of the delegated communications app. |
+| `M365_COMMS_EXECUTOR_URL` | Yes | Origin-only HTTPS, e.g. `https://comms-executor.internal` | Private base URL of the communications executor sidecar. |
+| `M365_COMMS_EXECUTOR_AUDIENCE` | Yes | Literal `m365-communications-executor` | JWT audience for the API→executor token. Must equal that exact string. |
+| `M365_COMMS_EXECUTOR_SIGNING_KID` | Yes | Non-empty string | Key ID of the API's signing JWK; must match the `kid` in the JWK file. |
+| `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Yes | Absolute path, e.g. `/run/secrets/m365_comms_executor_signing_private_jwk` | The API's Ed25519 **private** signing JWK. Same file rules as Graph-read: a regular file, mode `0600` or stricter, mounted read-only; never inline the key in an env var. |
+
+With the stock Compose file, `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` is the in-container mount path and is set for you; set `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE` in `.env` to the **host path** of the source JWK that feeds that secret (same ownership and mode rules as Graph-read). Leaving it unset mounts an empty placeholder and boot fails once the feature is enabled.
+
+The consent callback origin comes from `PUBLIC_URL`, then `PUBLIC_APP_URL`, then `PUBLIC_API_URL`, with `/api/v1/m365/comms-consent/callback` appended. In production one of them must be set.
 
 ## Docker Deployment
 

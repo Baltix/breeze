@@ -222,6 +222,12 @@ export type VpnProvider =
   | 'zerotier'
   | 'openvpn'
   | 'cloudflare-warp'
+  // Enterprise VPN / SSE clients (#8763).
+  | 'zscaler'
+  | 'globalprotect'
+  | 'cisco-secure-client'
+  | 'forticlient'
+  | 'netskope'
   | 'generic';
 
 /** How the agent recognized the VPN — a raw signal, not a trust ranking. */
@@ -990,6 +996,7 @@ export * from './topologyDiagnostics';
 
 // Physical topology collection contracts (M2 #5998)
 export * from './topologyPhysical';
+export * from './topologyUnifiV2';
 
 // Interface measurement telemetry contracts (M3 #5999)
 export * from './topologyTelemetry';

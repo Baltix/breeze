@@ -2064,6 +2064,10 @@
           "label": "Detalhes de vulnerabilidades",
           "description": "Mostra a cada login do portal desta organização os achados de CVE de cada dispositivo e sua gravidade (ID do CVE, descrição, gravidade, pontuação CVSS, disponibilidade de patch, status). Isso revela quais máquinas estão vulneráveis. Não é ativado por Ativar toda a visibilidade."
         },
+        "enablePhysicalPlacement": {
+          "label": "Posicionamento físico",
+          "description": "Mostra a cada login do portal desta organização onde cada dispositivo está fisicamente instalado (rack e sala). Isso revela o layout físico do ambiente. Não é ativado por Ativar toda a visibilidade."
+        },
         "enableHourBlock": {
           "label": "Horas de suporte",
           "description": "Mostra as horas pré-pagas do pacote usadas e restantes dentro da seção de uso de suporte do cliente. Requer Uso de suporte. Não é ativado ao habilitar toda a visibilidade."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Excluída pelas regras de categoria do anel",
           "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
           "awaiting_manual_approval": "Aguardando aprovação manual",
+          "explicitly_declined": "Recusado explicitamente",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",
           "ring_reference_invalid": "O anel de atualização da política é inválido",
           "device_not_in_org": "O dispositivo não pertence a esta organização"
@@ -4398,7 +4403,9 @@
     "nMoreCurrencies_other": "+{{count}} moedas",
     "incompletePriceBook": "Tabela de preços incompleta",
     "marginUnavailable": "Margem indisponível",
-    "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível"
+    "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
+    "marginUnknownMissingCost_one": "Margem desconhecida — {{count}} componente não tem custo",
+    "marginUnknownMissingCost_other": "Margem desconhecida — {{count}} componentes não têm custo"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catálogo de Produtos",
@@ -5427,6 +5434,8 @@
       "billingDescription": "Endereço fiscal e de cobrança",
       "pax8": "Marketplace Pax8",
       "pax8Description": "Assinaturas e pedidos",
+      "cloudTenants": "Locatários na nuvem",
+      "cloudTenantsDescription": "Microsoft 365 e Google Workspace",
       "extensions": "Extensões",
       "extensionsDescription": "Seções de extensões de terceiros",
       "portalBranding": "Portal e identidade visual",
@@ -5753,16 +5762,12 @@
       "nameRequired": "O nome da organização é obrigatório",
       "slugRequired": "Slug é obrigatório",
       "slugFormat": "Use apenas letras minúsculas, números e hifens",
-      "maxDevicesRequired": "Insira um limite máximo de dispositivos",
-      "maxDevicesInteger": "O máximo de dispositivos precisa ser um número inteiro",
-      "maxDevicesMin": "O máximo de dispositivos deve ser pelo menos 1",
       "contractEndAfterStart": "O término do contrato deve ser na data de início ou após ela"
     },
     "fields": {
       "name": "Nome da organização",
       "slug": "Slug",
       "type": "Tipo de organização",
-      "maxDevices": "Máximo de dispositivos",
       "contractStart": "Início do contrato",
       "contractEnd": "Fim do contrato"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "Não foi possível carregar as preferências de e-mail.",
     "saveFailed": "Não foi possível salvar as preferências de e-mail.",
     "retry": "Tentar novamente"
+  },
+  "characterKeyShortcuts": {
+    "title": "Atalhos de tecla única",
+    "description": "Atalhos de uma única tecla, como g e depois d, c e depois c, /, ? e as teclas da fila de tickets. Desative se entrarem em conflito com um leitor de tela ou entrada por voz. Ctrl/Cmd+K não é afetado.",
+    "label": "Ativar atalhos de tecla única",
+    "enabledToast": "Atalhos de tecla única ativados",
+    "disabledToast": "Atalhos de tecla única desativados",
+    "saveFailed": "Não foi possível salvar os atalhos de tecla única."
   }
 }

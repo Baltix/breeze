@@ -1,10 +1,10 @@
 import { isAutopayEnabledForPartner } from './autopay/autopayGate';
-import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
   organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
-  invoices, invoiceLineDevices, contractHourPeriods,
+  invoices, invoiceLineDevices, contractHourPeriods, contractDocuments, serviceDeliverables,
 } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, HourBlockEstimate, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
@@ -13,11 +13,14 @@ import {
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
   contractLineInvariantIssues, isSiteDeletedLine, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
   type ContractLineType, type DeviceRole, type RolloverPolicy, type UpdateContractLineInput,
+  RELATED_CONTRACT_STATUSES, contractsOverlapCadence, type RelatedContract,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { computeOpenHourBlockPeriod } from './contractHourBlockEstimate';
-import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor, todayISO, firstUnclaimedPeriodStart, advancePastClaimed } from './contractMath';
+import { periodIndexFor, nextBillingDate, isExpired, todayISO, firstUnclaimedPeriodStart, advancePastClaimed, contractInTermForReporting, billingRunPeriods, isAutoRenewing } from './contractMath';
+import { loadBilledFinalTermValues } from './contractBilledFinalTerm';
 import { emitContractEvent } from './contractEvents';
+import { rebaseUnmaterializedDeliverables } from './serviceDeliverableService';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
 import { pgErrorNode, isPgUniqueViolation } from '../utils/pgErrors';
 
@@ -449,7 +452,64 @@ export async function createContract(input: {
   return row!;
 }
 
-export async function getContract(contractId: string, actor: ContractActor) {
+/**
+ * #9303: the org's OTHER contracts that bill now or can be turned on to bill
+ * (draft/active/paused), for the warn-and-confirm notice on a contract's page.
+ * Reads through the ambient `db`, i.e. the caller's own access context — RLS
+ * applies — and filters to the viewed contract's org explicitly, so a partner
+ * reader who can see several orgs never gets a sister org's contract here.
+ * Ordered oldest first: the hand-built contract a quote accept landed next to
+ * is usually the one to keep.
+ */
+export async function listRelatedContracts(
+  contract: Pick<ContractRow, 'id' | 'orgId' | 'intervalMonths' | 'startDate' | 'endDate'>,
+  actor: ContractActor,
+): Promise<RelatedContract[]> {
+  requireOrgAccess(actor, contract.orgId);
+  const siblings = await db.select().from(contracts)
+    .where(and(
+      eq(contracts.orgId, contract.orgId),
+      ne(contracts.id, contract.id),
+      inArray(contracts.status, [...RELATED_CONTRACT_STATUSES]),
+    ))
+    .orderBy(contracts.createdAt, contracts.id);
+  if (siblings.length === 0) return [];
+  const priced = await withEstimatedPeriodValues(siblings, actor);
+  if (priced.length === 0) return [];
+  const ids = priced.map((r) => r.id);
+  // Sequential, not Promise.all: inside a request both share one transaction's
+  // connection, which serializes them anyway.
+  const deliverableRows = await db.select({ contractId: serviceDeliverables.contractId, n: count() })
+    .from(serviceDeliverables)
+    .where(and(inArray(serviceDeliverables.contractId, ids), eq(serviceDeliverables.active, true)))
+    .groupBy(serviceDeliverables.contractId);
+  const agreementRows = await db.select({ contractId: contractDocuments.contractId, n: count() })
+    .from(contractDocuments)
+    .where(inArray(contractDocuments.contractId, ids))
+    .groupBy(contractDocuments.contractId);
+  const deliverables = new Map(deliverableRows.map((r) => [r.contractId, Number(r.n)]));
+  const agreements = new Map(agreementRows.map((r) => [r.contractId, Number(r.n)]));
+  return priced.map((r) => ({
+    id: r.id,
+    name: r.name,
+    status: r.status as RelatedContract['status'],
+    intervalMonths: r.intervalMonths,
+    currencyCode: r.currencyCode,
+    recurringTotal: r.estimatedPeriodValue,
+    deliverableCount: deliverables.get(r.id) ?? 0,
+    signedAgreementCount: agreements.get(r.id) ?? 0,
+    overlapsCadence: contractsOverlapCadence(contract, r),
+  }));
+}
+
+export async function getContract(
+  contractId: string,
+  actor: ContractActor,
+  /** #9303: `includeRelated` adds `relatedContracts`. Opt-in so the AI tools,
+   *  the partner API and the generate route's authorization read keep their
+   *  existing shape and cost; only the web contract page asks for it. */
+  options: { includeRelated?: boolean } = {},
+) {
   const contract = await getOwnedContractOr404(contractId, actor);
   const autopayEnabled = await isAutopayEnabledForPartner(db, contract.partnerId);
   // #3205 W03: (sortOrder, createdAt, id). sortOrder alone is not a total order
@@ -461,6 +521,11 @@ export async function getContract(contractId: string, actor: ContractActor) {
   // Site axis: a restricted actor sees only its reachable lines, and a contract
   // with none is denied (see contractLineSiteDenied). No-op when unrestricted.
   const lines = visibleLinesOrDeny(actor, allLines);
+  // After the site-axis deny above, so a reader denied this contract never
+  // pays for (or learns anything from) its siblings.
+  const related = options.includeRelated
+    ? { relatedContracts: await listRelatedContracts(contract, actor) }
+    : {};
   // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
   // line was hidden, say so, and withhold the billing-period history — every
   // number in it (invoice totals, snapshot/uncovered/overage counts) is a
@@ -470,7 +535,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     ? lines.length !== allLines.length
     : undefined;
   if (linesFilteredBySiteScope === true) {
-    return { autopayEnabled, contract, lines: await withBlockHistory(await withLineRefs(lines)), periods: null, linesFilteredBySiteScope };
+    return { autopayEnabled, contract, lines: await withBlockHistory(await withLineRefs(lines)), periods: null, linesFilteredBySiteScope, ...related };
   }
   // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
   // detail table. JSON digests remain exclusive to the expanded outcome read.
@@ -501,6 +566,7 @@ export async function getContract(contractId: string, actor: ContractActor) {
     lines: await withBlockHistory(await withLineRefs(lines)),
     periods: periods as typeof periods | null,
     ...(linesFilteredBySiteScope === undefined ? {} : { linesFilteredBySiteScope }),
+    ...related,
   };
 }
 
@@ -545,6 +611,17 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
+  return withEstimatedPeriodValues(rows, actor);
+}
+
+/**
+ * The list row enrichment, shared by listContracts and the detail read's
+ * relatedContracts (#9303) so both show the same per-period number. Applies the
+ * site axis exactly as the list always has: a contract with no line this actor
+ * can reach is OMITTED, and one with an unreachable line has its estimate
+ * withheld (null) and is flagged.
+ */
+async function withEstimatedPeriodValues(rows: ContractRow[], actor: ContractActor): Promise<ContractListRow[]> {
   if (rows.length === 0) return [];
 
   // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
@@ -1088,24 +1165,12 @@ async function loadCatalogPriceInputs(
  * price-book row for that currency → the line's stamped snapshot on a gap), so
  * the dashboard agrees with the invoices it predicts. Never converts and never
  * falls through to another currency's price.
+ *
+ * Which contracts count is contractInTermForReporting (#9220), not the status
+ * stamp. A contract in its billed final term (flipped to 'expired' by the
+ * invoice for its last period, still before end_date) is valued at what that
+ * invoice billed, not re-resolved — see loadBilledFinalTermValues.
  */
-/**
- * The billing sites' expiry test, evaluated against the period the sweep is
- * NEXT going to bill (`duePeriodStartFor`, exactly as generateDueInvoice does).
- * A contract with no pointer can never produce another invoice, so it is judged
- * against today instead. Open-ended (endDate null) is never past its end.
- */
-function isPastEndForReporting(
-  c: { endDate: string | null; nextBillingAt: string | null; billingTiming: 'advance' | 'arrears'; intervalMonths: number },
-  asOfISO: string,
-): boolean {
-  if (c.endDate === null || c.endDate === undefined) return false;
-  const periodStart = c.nextBillingAt
-    ? duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths > 0 ? c.intervalMonths : 1)
-    : asOfISO;
-  return isExpired({ endDate: c.endDate, periodStart });
-}
-
 export async function summarizeActiveContractMrrByOrg(
   orgIds: readonly string[],
   asOf: Date = new Date(),
@@ -1113,18 +1178,61 @@ export async function summarizeActiveContractMrrByOrg(
   const out = new Map<string, OrgCurrencyMrr[]>();
   if (orgIds.length === 0) return out;
 
-  const active = await db.select().from(contracts)
-    .where(and(inArray(contracts.orgId, [...orgIds]), eq(contracts.status, 'active' as never)));
-  // `status = 'active'` alone is NOT "still running": a contract is flipped to
-  // 'expired' LAZILY inside generateDueInvoice / renewal, at its next billing
-  // date — there is no expiry reaper — so an ended annual contract keeps the
-  // 'active' stamp for up to a whole interval. Billing already skips it via
-  // isExpired, so reporting it here would break this rollup's contract that the
-  // dashboard agrees with the invoices it predicts. Same guard, same inputs.
-  const rows = active.filter((c) => !isPastEndForReporting(c, todayISO(asOf)));
-  if (rows.length === 0) return out;
+  // Eligibility is "in term" (contractInTermForReporting, #9220 / spec T8), not
+  // the status stamp, which is wrong in BOTH directions:
+  //  - 'active' can be over: an ended contract is flipped to 'expired' LAZILY by
+  //    generateDueInvoice at its next billing date (there is no expiry reaper),
+  //    so it keeps 'active' for up to a whole interval while billing already
+  //    skips it via isExpired (isPastEndForReporting, same guard, same inputs).
+  //  - 'expired' can be running: generateDueInvoice flips an ADVANCE contract to
+  //    'expired' as soon as it bills the final period, which is paid for and
+  //    still being served until end_date. Those are valued at what was billed.
+  //    An AUTO-RENEWING contract is not expired then (#9243). It stays 'active'
+  //    with the pointer at end_date and is valued the same way.
+  // Only expired contracts whose dates still put them in term are loaded, so
+  // expired history does not grow this query.
+  const asOfISO = todayISO(asOf);
+  const candidates = await db.select().from(contracts)
+    .where(and(
+      inArray(contracts.orgId, [...orgIds]),
+      or(
+        eq(contracts.status, 'active' as never),
+        and(eq(contracts.status, 'expired' as never), lte(contracts.startDate, asOfISO), gt(contracts.endDate, asOfISO)),
+      ),
+    ));
+  // An expired contract, or an active one past its billing end (an auto-renewing
+  // contract after its final invoice, #9243), is in term only if a billed period
+  // covers asOf. Look that up only for contracts whose basis depends on it.
+  const finalTermIds = candidates
+    .filter((c) => contractInTermForReporting(c, asOfISO, false) === null && contractInTermForReporting(c, asOfISO, true) !== null)
+    .map((c) => c.id);
+  const finalTermValues = await loadBilledFinalTermValues(finalTermIds, asOfISO);
 
-  const allLines = await db.select().from(contractLines)
+  const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
+  // Round each contract in ITS OWN currency before grouping — a JPY contract
+  // must never contribute a fractional yen.
+  const addMonthly = (c: { orgId: string; currencyCode: string; intervalMonths: number }, periodCents: number) => {
+    const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
+    const monthly = Number(roundToCurrency(Number(fromCents(periodCents)) / months, c.currencyCode));
+    const perOrg = totals.get(c.orgId) ?? new Map<string, number>();
+    perOrg.set(c.currencyCode, (perOrg.get(c.currencyCode) ?? 0) + monthly);
+    totals.set(c.orgId, perOrg);
+  };
+
+  const rows: typeof candidates = [];
+  for (const c of candidates) {
+    const value = finalTermValues.get(c.id);
+    const basis = contractInTermForReporting(c, asOfISO, value !== undefined);
+    if (basis === 'active') { rows.push(c); continue; }
+    if (basis !== 'billed_final_term' || value === undefined) continue;
+    if (value.cents === null) {
+      console.warn('[contracts] MRR rollup skipped final term of contract %s (org %s): %s', c.id, c.orgId, value.reason);
+      continue;
+    }
+    addMonthly(c, value.cents);
+  }
+
+  const allLines = rows.length === 0 ? [] : await db.select().from(contractLines)
     .where(inArray(contractLines.contractId, rows.map((r) => r.id)));
   const byContract = new Map<string, typeof allLines>();
   for (const l of allLines) {
@@ -1173,7 +1281,6 @@ export async function summarizeActiveContractMrrByOrg(
   // and a distinct org seat count each run exactly once for the whole dashboard.
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
-  const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
 
   for (const c of rows) {
     let cents = 0;
@@ -1217,14 +1324,7 @@ export async function summarizeActiveContractMrrByOrg(
       throw err;
     }
     if (siteDeleted) continue;
-    const periodValue = Number(fromCents(cents));
-    const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
-    // Round each contract in ITS OWN currency before grouping — a JPY contract
-    // must never contribute a fractional yen.
-    const monthly = Number(roundToCurrency(periodValue / months, c.currencyCode));
-    const perOrg = totals.get(c.orgId) ?? new Map<string, number>();
-    perOrg.set(c.currencyCode, (perOrg.get(c.currencyCode) ?? 0) + monthly);
-    totals.set(c.orgId, perOrg);
+    addMonthly(c, cents);
   }
 
   for (const [orgId, perCurrency] of totals) {
@@ -1274,7 +1374,23 @@ export async function updateContract(contractId: string, patch: UpdateContractIn
   if (effectiveAutoRenew && (effectiveEndDate == null || effectiveTerm == null)) {
     throw new ContractServiceError('auto-renew requires an end date and renewal term', 400);
   }
-  await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
+  // #9309: a draft's deliverables are paused and still pinned to the old start;
+  // move the unmaterialized ones with it, in the same transaction.
+  const newStart = c.status === 'draft' && patch.startDate !== undefined && patch.startDate !== c.startDate
+    ? patch.startDate : null;
+  if (newStart === null) {
+    await db.update(contracts).set(safeSet).where(eq(contracts.id, contractId));
+  } else {
+    await db.transaction(async (tx) => {
+      // CAS on the draft + old start `c` was read with: a concurrent activation
+      // or start edit must not have the re-base run against a stale `from`.
+      const [updated] = await tx.update(contracts).set(safeSet)
+        .where(and(eq(contracts.id, contractId), eq(contracts.status, 'draft'), eq(contracts.startDate, c.startDate)))
+        .returning({ id: contracts.id });
+      if (!updated) throw new ContractServiceError('Contract changed while it was being edited; reload and retry', 409, 'INVALID_STATE');
+      await rebaseUnmaterializedDeliverables(contractId, c.orgId, { from: c.startDate, to: newStart }, tx);
+    });
+  }
   return getOwnedContractOr404(contractId, actor);
 }
 
@@ -2036,6 +2152,16 @@ export async function activateContract(contractId: string, actor: ContractActor,
     const [row] = await tx.update(contracts)
       .set({ status: 'active', nextBillingAt: nextAt, updatedAt: asOf })
       .where(eq(contracts.id, contractId)).returning();
+    // #9309: the sweep skipped this contract's deliverables while it was a draft.
+    // Re-base the ones with no occurrence yet onto the real start — or onto today
+    // when that start already passed, so a re-based deliverable is not born
+    // overdue or missed (rebaseUnmaterializedDeliverables says which it moves).
+    // DRAFTS ONLY: resume (paused -> active) also emits contract.activated, and
+    // a live contract's deliverables keep the schedule they were given.
+    if (c.status === 'draft') {
+      const today = todayISO(asOf);
+      await rebaseUnmaterializedDeliverables(contractId, c.orgId, { from: c.startDate, to: c.startDate > today ? c.startDate : today }, tx);
+    }
     return { row: row!, c };
   });
   await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
@@ -2148,7 +2274,9 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
 export interface GenerateResult {
   generated: boolean;
   invoiceId?: string;
-  skipped?: 'already_billed' | 'expired' | 'not_due';
+  /** `renewal_pending` (#9243): an auto-renew contract's due period is past end_date and
+   *  the renewal sweep has not extended it yet; nothing was billed or expired. */
+  skipped?: 'already_billed' | 'expired' | 'not_due' | 'renewal_pending';
   /** True only when the contract opts into auto-issue AND an invoice was generated. */
   autoIssue: boolean;
   /** The InvoiceActor the caller needs to finish issue+send post-commit. Present only when generated. */
@@ -2262,12 +2390,27 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
   // arrears: the just-completed period (whose END == nextBillingAt) → one index back.
-  const idxAt = periodIndexFor(c.startDate, c.intervalMonths, c.nextBillingAt);
-  const idx = Math.max(0, c.billingTiming === 'advance' ? idxAt : idxAt - 1);
-  const period = computePeriod(c.startDate, c.intervalMonths, idx);
+  const { due: period, next: nextPeriod } = billingRunPeriods({
+    startDate: c.startDate, intervalMonths: c.intervalMonths,
+    billingTiming: c.billingTiming as 'advance' | 'arrears', nextBillingAt: c.nextBillingAt,
+  });
+  const autoRenewing = isAutoRenewing(c);
 
   // Expiry at due-check: if this period starts on/after the end date, expire (do not bill).
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
+    // #9243: billing never expires an auto-renewing contract; the renewal sweep
+    // owns that term and extends it on end_date. Reaching here means the sweep
+    // has not renewed it yet. Either the manual /generate route ran first on the
+    // renewal day, or the daily sweep missed it. Defer with no writes: nothing is
+    // billed past the term and nothing is expired. The next daily job renews it
+    // and then bills this period.
+    if (autoRenewing) {
+      console.warn(
+        '[contract-billing] renewal pending: auto-renew contract %s reached billing past end_date %s before the renewal sweep extended it; deferring (not billed, not expired)',
+        contractId, c.endDate,
+      );
+      return { generated: false, autoIssue: false, skipped: 'renewal_pending', priceBookGaps: [], uncoveredDevices: null, overages: [], ...NO_HOUR_BLOCK_CLOSES };
+    }
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await retireLiveHourBlocks(contractId);
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
@@ -2321,14 +2464,15 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     }
   }
 
-  // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
-  //    (the engine has no terms param on create).
-  const noteParts = [c.notes, c.terms].filter(Boolean) as string[];
+  // 1. Draft invoice. The contract's Invoice note (`terms`) becomes the invoice
+  //    notes. Contract `notes` are internal-only and never printed (#9347);
+  //    2027-01-02-100900 copied pre-existing notes into `terms` so old
+  //    contracts keep printing the same text.
   // B2: the invoice copies the CONTRACT's stamped currency (spec §5 snapshots
   // rule) — never the org's current setting, which may have changed since the
   // contract was created.
   const inv = await createManualInvoice(
-    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined, currencyCode: c.currencyCode },
+    { orgId: c.orgId, notes: c.terms || undefined, currencyCode: c.currencyCode },
     actor
   );
 
@@ -2456,14 +2600,27 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     overages,
   });
 
-  // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
-  const nextIdx = idx + 1;
-  const nextPeriod = computePeriod(c.startDate, c.intervalMonths, nextIdx);
-  if (isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
+  // 4. Advance the pointer to the next period, or expire if the next period is past
+  //    end_date. #9243: an auto-renewing contract is never expired here. Its final
+  //    invoice leaves it active with the pointer at the next period, and the
+  //    renewal sweep extends end_date on end_date (the date the advance notice
+  //    promised) before that period is billed. Expiring here is what stopped
+  //    auto-renew from ever firing: the sweep only looks at active contracts.
+  if (!autoRenewing && isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await retireLiveHourBlocks(contractId);
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
   } else {
+    // Crossing end_date BEFORE it arrives is the normal final invoice of an
+    // auto-renewing term. Doing it on/after end_date means the renewal sweep
+    // should already have extended the term and did not, so make that visible.
+    // The contract stays active; the next daily sweep renews it.
+    if (autoRenewing && c.endDate !== null && todayISO(asOf) >= c.endDate && isExpired({ endDate: c.endDate, periodStart: nextPeriod.periodStart })) {
+      console.warn(
+        '[contract-billing] renewal overdue: auto-renew contract %s billed past end_date %s without a renewal; left active for the next renewal sweep',
+        contractId, c.endDate,
+      );
+    }
     const nextAt = c.billingTiming === 'advance' ? nextPeriod.periodStart : nextPeriod.periodEnd;
     await db.update(contracts).set({ nextBillingAt: nextAt, updatedAt: asOf }).where(eq(contracts.id, contractId));
   }

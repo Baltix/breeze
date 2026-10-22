@@ -106,7 +106,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   ],
   // #6930: ticket-scoped checklist step edits, same family as update_fields.
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
-  manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template'],
+  manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template', 'save_as_template', 'duplicate_template'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -804,6 +804,39 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
+ * Tool Catalog W03 (#5218). Every NON-action input key that an input-aware
+ * branch of `checkGuardrails` / `resolveApprovalScope` reads to pick a tier or
+ * an approval scope. A flow step's tier is fixed at save time, so the flow
+ * validator requires each of these (plus the action selector and any
+ * LIVE_READ_INPUT_FLAGS flag) to be literal — a template must never choose its
+ * own tier at run time. Pinned by aiGuardrails.tierDecidingKeys.contract.test.ts;
+ * a new input-aware branch needs an entry here.
+ *
+ * (event_logs_query's payload-aware classification is chat-session only and
+ * never applies to a flow, which runs without a chat session.)
+ */
+export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
+  // isInputAwareTier3: comment + isPublic === true escalates to tier 3.
+  manage_tickets: ['isPublic'],
+  // isInputAwareTier3: featureType === 'maintenance' or an HP CMSL inlineSettings payload.
+  manage_policy_feature_link: ['featureType', 'inlineSettings'],
+  // resolveApprovalScope: isolate === false is four-eyes.
+  s1_isolate_device: ['isolate'],
+  // isProposalRunScript: a proposalId changes the tier source entirely.
+  run_script: ['proposalId'],
+  // resolveApprovalScope: update_org with a `status` key is four-eyes.
+  manage_organizations: ['status'],
+};
+
+/** The action selector, the input-aware keys, and the live-read flag, in that order. */
+export function tierDecidingInputKeys(toolName: string): string[] {
+  const keys = [TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action', ...(TIER_DECIDING_INPUT_KEYS[toolName] ?? [])];
+  const liveFlag = LIVE_READ_INPUT_FLAGS[toolName];
+  if (liveFlag) keys.push(liveFlag);
+  return keys;
+}
+
+/**
  * Why a proposal-backed `run_script` was refused a tier, when the input named
  * a `proposalId` but `loadProposalGuardrailContext` could not hand back a
  * reviewed risk tier for it (#7129). Deliberately collapses "no such id" and
@@ -1009,6 +1042,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_item: { resource: 'tickets', action: 'write' },
     reorder: { resource: 'tickets', action: 'write' },
     apply_template: { resource: 'tickets', action: 'write' },
+    save_as_template: { resource: 'tickets', action: 'write' },
+    duplicate_template: { resource: 'tickets', action: 'write' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
@@ -1135,6 +1170,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   read_artifact: { resource: 'ai_agents', action: 'read' },
   // Same permission as the editor's GET /orgs/:orgId/trust-page.
   get_trust_page_status: { resource: 'organizations', action: 'read' },
+  // Tool Catalog W03 (#5218): flows reuse the automations permissions.
+  draft_flow: { resource: 'automations', action: 'write' },
+  validate_flow: { resource: 'automations', action: 'read' },
+  get_flow: { resource: 'automations', action: 'read' },
+  list_flows: { resource: 'automations', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },

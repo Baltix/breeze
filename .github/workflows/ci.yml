@@ -36,7 +36,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.26.10'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -995,6 +995,20 @@ jobs:
         working-directory: apps/mobile
         run: pnpm exec expo prebuild --platform ios --no-install
 
+      # iOS 27 refuses to launch an app linked against the iOS 27 SDK without
+      # the UIScene lifecycle (App Review 2.1(a) on 1.0.1 (84)). The simulator
+      # build below runs on an older iOS runtime and cannot detect the
+      # omission, and the app.json unit test only proves the flag is set, not
+      # that prebuild honoured it. Check the generated project directly.
+      - name: Assert UIScene lifecycle adoption in the generated project
+        working-directory: apps/mobile/ios
+        run: |
+          set -euo pipefail
+          plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw BreezeRMM/Info.plist | grep -qx EXExpoAppSceneDelegate \
+            || { echo "::error::Info.plist has no UIApplicationSceneManifest pointing at EXExpoAppSceneDelegate — iOS 27 will refuse to launch this build (see STORE_SUBMISSION.md)"; exit 1; }
+          grep -q 'class AppDelegate: ExpoAppDelegate, ExpoReactNativeFactoryProvider' BreezeRMM/AppDelegate.swift \
+            || { echo "::error::AppDelegate.swift does not conform to ExpoReactNativeFactoryProvider — scene support was not applied by expo-build-properties"; exit 1; }
+
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
         run: pod install
@@ -1153,6 +1167,40 @@ jobs:
 
       - name: Typecheck Office Add-in Core
         run: pnpm --filter=@breeze/office-addin-core typecheck
+
+  # @breeze/document-ui (#9414): the shared customer-document renderer web and
+  # portal consume. App-gated like test-shared, not area-gated: any packages/**
+  # diff classifies as code+app, and both web and portal depend on it.
+  test-document-ui:
+    name: Test Document UI
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Document UI tests
+        run: pnpm --filter @breeze/document-ui exec vitest run
+
+      - name: Typecheck Document UI
+        run: pnpm --filter=@breeze/document-ui typecheck
 
   test-excel-addin:
     name: Test Excel Add-in
@@ -2125,6 +2173,26 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # #9253: the YARA-X engine never started under a Windows service because
+      # yaraxwasm hands os.Stderr (an invalid handle without a console) to the
+      # wasm guest. yarac.EnsureEngine swaps an unusable stderr for NUL. These
+      # are the only tests that exercise NUL as the guest's stderr on Windows;
+      # assert all three ran and passed rather than trusting the exit code.
+      - name: Run Windows YARA-X unusable-stderr tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/yarascan/yarac -run '^Test(EngineStartsWithUnusableStderr|EnsureUsableStderrKeepsAWorkingStderr|EnsureUsableStderrReplacesAnUnusableStderr)$' -timeout 8m -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the unusable-stderr tests SKIPPED" }
+          if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # internal/config's Windows owner/DACL code had never run in CI, which is
       # how #7394 shipped: an elevated administrator running
       # `breeze-agent enroll` was refused SYSTEM as the ProgramData owner
@@ -2199,6 +2267,37 @@ jobs:
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
+
+      # #9091: the user-helper's Windows toast tests had only ever compiled.
+      # internal/userhelper is not in the package list above (its other
+      # Windows-tagged tests have never been run natively), so these run by
+      # name: toast backend routing, including no PowerShell retry when
+      # toasts are disabled (so FallbackDialog fires); the NotificationSetting
+      # mapping; the hidden PowerShell fallback command and its own Setting
+      # check; and the real WinRT sequence, which must read get_Setting and
+      # fail no earlier than IToastNotifier::Show, judged by the rule
+      # TestWinRTSequenceVerdict pins. Show may be refused without an
+      # interactive desktop, but in run 39156151658 it returned S_OK while
+      # get_Setting returned ERROR_NOT_FOUND (0x80070490); that exact
+      # get_Setting failure is accepted next to a successful Show, any other
+      # is not.
+      # TestShowToastWinRTLive raises a visible toast and stays unselected.
+      - name: Run Windows user-helper toast tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/userhelper -run '^Test(ShowNotificationOS|NotificationSettingError|ToastPowerShellCommandIsHidden|ToastPowerShellScriptRefusesDisabledNotifier|WinRTSequenceVerdict|ShowToastWinRTFailsNoEarlierThanShow)$' -timeout 5m -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the user-helper toast tests SKIPPED" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 6) { throw "expected exactly 6 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          $subPasses = @($out | Select-String -Pattern '^\s+--- PASS: Test').Count
+          if ($subPasses -ne 21) { throw "expected exactly 21 subtest PASS lines, got $subPasses - a table case was renamed, removed, or added without updating this count" }
 
       # #7629: the agent re-secures its config folder if another account
       # created it, before reading anything from it. The tests plant
@@ -2511,6 +2610,40 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test ./internal/collectors -run '^TestCollectorCommand|^TestCappedBuffer' -v
+
+      # The VPN collector's Windows service query (#8763) is a PowerShell
+      # pipeline that looks up Zscaler drivers by name; a non-zero exit when
+      # they are absent would silently drop every provider's service signal.
+      # Only a real Windows host can prove it exits 0 and emits Name<TAB>DisplayName.
+      - name: Run Windows VPN service query test
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsVPNServiceQuery$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: TestWindowsVPNServiceQuery').Count
+          if ($passes -ne 1) { throw "TestWindowsVPNServiceQuery did not run - renamed or removed without updating this step" }
+
+      # #9267: link speed is read in-process via GetIfTable2Ex. These are the
+      # only tests that exercise the real Windows getLinkSpeed (it must never
+      # spawn PowerShell again) and the real MIB_IF_TABLE2 read; elsewhere
+      # they only compile.
+      - name: Run Windows link-speed tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^(TestGetLinkSpeedWindowsNeverSpawnsProcess|TestReadIfTable2LinkSpeedsLive)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
@@ -4478,7 +4611,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -4512,6 +4645,7 @@ jobs:
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
           TEST_SHARED_RESULT: ${{ needs.test-shared.result }}
+          TEST_DOCUMENT_UI_RESULT: ${{ needs.test-document-ui.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
           TEST_WORD_ADDIN_RESULT: ${{ needs.test-word-addin.result }}
@@ -4596,6 +4730,7 @@ jobs:
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${TEST_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
              [[ "${TEST_SHARED_RESULT}" != "success" ]] || \
+             [[ "${TEST_DOCUMENT_UI_RESULT}" != "success" ]] || \
              { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]]; } || \
              { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
              { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]]; } || \
@@ -4670,6 +4805,7 @@ jobs:
              [[ "${TEST_PORTAL_RESULT}" != "skipped" ]] || \
              [[ "${TEST_VIEWER_RESULT}" != "skipped" ]] || \
              [[ "${TEST_SHARED_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_DOCUMENT_UI_RESULT}" != "skipped" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]] || \
              [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]] || \

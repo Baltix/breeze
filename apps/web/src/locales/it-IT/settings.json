@@ -2064,6 +2064,10 @@
           "label": "Dettaglio vulnerabilità",
           "description": "Mostra a ogni accesso al portale di questa organizzazione i riscontri CVE di ciascun dispositivo e la relativa gravità (ID CVE, descrizione, gravità, punteggio CVSS, disponibilità di patch, stato). Questo rivela quali macchine sono vulnerabili. Non viene attivato da Abilita tutta la visibilità."
         },
+        "enablePhysicalPlacement": {
+          "label": "Posizionamento fisico",
+          "description": "Mostra a ogni accesso al portale di questa organizzazione dove si trova fisicamente ogni dispositivo (rack e sala). Questo rivela la disposizione fisica dell'ambiente. Non viene attivato da Abilita tutta la visibilità."
+        },
         "enableHourBlock": {
           "label": "Ore di assistenza",
           "description": "Mostra le ore prepagate del pacchetto utilizzate e rimanenti nella sezione Utilizzo assistenza del cliente. Richiede Utilizzo assistenza. Non viene attivato abilitando tutta la visibilità."
@@ -2952,6 +2956,7 @@
           "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "awaiting_manual_approval": "In attesa di approvazione manuale",
+          "explicitly_declined": "Rifiutato esplicitamente",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
           "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
@@ -4393,7 +4398,9 @@
     "nMoreCurrencies_other": "+{{count}} valute",
     "incompletePriceBook": "Listino prezzi incompleto",
     "marginUnavailable": "Margine non disponibile",
-    "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile"
+    "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile",
+    "marginUnknownMissingCost_one": "Margine sconosciuto — {{count}} componente non ha un costo",
+    "marginUnknownMissingCost_other": "Margine sconosciuto — {{count}} componenti non hanno un costo"
   },
   "catalogSettingsPage": {
     "productCatalog": "Catalogo prodotti",
@@ -5422,6 +5429,8 @@
       "billingDescription": "Imposte e indirizzo di fatturazione",
       "pax8": "Pax8",
       "pax8Description": "Abbonamenti e ordini",
+      "cloudTenants": "Tenant cloud",
+      "cloudTenantsDescription": "Microsoft 365 e Google Workspace",
       "extensions": "Estensioni",
       "extensionsDescription": "Sezioni estensioni di terze parti",
       "portalBranding": "Portale e branding",
@@ -5748,16 +5757,12 @@
       "nameRequired": "Il nome dell'organizzazione è obbligatorio",
       "slugRequired": "Lo slug è obbligatorio",
       "slugFormat": "Usa solo lettere minuscole, numeri e trattini",
-      "maxDevicesRequired": "Inserisci un limite massimo di dispositivi",
-      "maxDevicesInteger": "Il numero massimo di dispositivi deve essere un numero intero",
-      "maxDevicesMin": "Il numero massimo di dispositivi deve essere almeno 1",
       "contractEndAfterStart": "La fine del contratto deve essere nella data di inizio o successiva"
     },
     "fields": {
       "name": "Nome organizzazione",
       "slug": "Slug",
       "type": "Tipo organizzazione",
-      "maxDevices": "Dispositivi massimi",
       "contractStart": "Inizio contratto",
       "contractEnd": "Fine contratto"
     },
@@ -6862,5 +6867,13 @@
     "loadFailed": "Impossibile caricare le preferenze email.",
     "saveFailed": "Impossibile salvare le preferenze email.",
     "retry": "Riprova"
+  },
+  "characterKeyShortcuts": {
+    "title": "Scorciatoie a tasto singolo",
+    "description": "Scorciatoie a tasto singolo come g poi d, c poi c, /, ? e i tasti della coda ticket. Disattivale se entrano in conflitto con uno screen reader o con l'input vocale. Ctrl/Cmd+K non è interessato.",
+    "label": "Attiva le scorciatoie a tasto singolo",
+    "enabledToast": "Scorciatoie a tasto singolo attivate",
+    "disabledToast": "Scorciatoie a tasto singolo disattivate",
+    "saveFailed": "Impossibile salvare le scorciatoie a tasto singolo."
   }
 }
