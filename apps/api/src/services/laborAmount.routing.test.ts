@@ -101,7 +101,10 @@ describe('labour rule has one implementation (#9561)', () => {
 
   it('no inline copy of the formula exists outside the helpers', () => {
     const offenders: string[] = [];
-    const roots = ['apps/api/src', 'apps/web/src', 'apps/portal/src', 'apps/mobile/src', 'packages/shared/src', 'ee'];
+    // apps/mobile is deliberately absent: CI gates it on its own filter and a
+    // mobile-only change never runs test-api (ci-area-gating.test.mjs), so a
+    // read of it here would be a cross-area reference with no rule behind it.
+    const roots = ['apps/api/src', 'apps/web/src', 'apps/portal/src', 'packages/shared/src', 'ee'];
     for (const root of roots) {
       for (const file of walk(join(REPO, root))) {
         const path = rel(file);
