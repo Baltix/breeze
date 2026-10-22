@@ -215,8 +215,10 @@ describe('Compose bind-mount sources', () => {
  * #9519 — apps/web and apps/portal both import `@breeze/document-ui`. The dev
  * and worktree overrides must bind-mount it into each consuming container, or
  * edits never reach the running stack (and the document-renderer e2e needs a
- * `docker cp`). The portal worktree override redefines `volumes` wholesale, so
- * it needs its own entries.
+ * `docker cp`). Compose merges `volumes` by target path across the .dev and
+ * .worktree files, so the .dev entries are what wt-stack relies on; the
+ * worktree portal block repeats them (as it does the apps/portal mounts) so it
+ * stays correct if it ever gains `!override`. Each file is checked on its own.
  */
 describe('document-ui dev mounts (#9519)', () => {
   const REQUIRED = [
