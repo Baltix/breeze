@@ -70,13 +70,13 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 		// means the two thresholds can be tuned independently without silently
 		// re-breaking the diagnostic.
 		var carried error
-		follows := c.gdiFollowsDesktop
+		follows, followsSince := c.gdiFollowsDesktop, c.gdiFollowsSince
 		if c.gdiFallback != nil {
 			carried = c.gdiFallback.LastCaptureError()
 		}
 		c.closeGDIFallbackLocked()
 		c.gdiFallback = &gdiCapturer{config: c.config, lastCaptureErr: carried}
-		c.gdiFollowsDesktop = follows
+		c.gdiFollowsDesktop, c.gdiFollowsSince = follows, followsSince
 		slog.Info("Recreated GDI fallback after repeated no-frame samples",
 			"count", c.gdiNoFrameCount)
 	}

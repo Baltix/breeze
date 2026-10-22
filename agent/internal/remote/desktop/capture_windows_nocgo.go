@@ -163,9 +163,12 @@ func (c *gdiCapturer) Capture() (*image.RGBA, error) {
 
 func (c *gdiCapturer) recordCaptureFailureLocked(err error) {
 	c.consecutiveCaptureFailures++
+	changed := c.lastCaptureErr == nil || c.lastCaptureErr.Error() != err.Error()
 	c.lastCaptureErr = err
 	now := time.Now()
-	if c.consecutiveCaptureFailures == 1 || now.Sub(c.lastFailureLog) >= 2*time.Second {
+	// A different failure is always logged: the throttle exists to stop one
+	// repeating error flooding the log, not to hide that the cause changed.
+	if changed || c.consecutiveCaptureFailures == 1 || now.Sub(c.lastFailureLog) >= 2*time.Second {
 		attrs := []any{
 			"error", err.Error(),
 			"consecutive", c.consecutiveCaptureFailures,

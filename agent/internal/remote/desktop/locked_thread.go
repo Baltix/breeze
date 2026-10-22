@@ -3,7 +3,9 @@ package desktop
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"sync"
 )
 
@@ -65,7 +67,11 @@ func (t *lockedThread) run(onExit func(), ready chan<- struct{}) {
 			w.done <- runLockedThreadWork(w.fn)
 		case <-t.quit:
 			if onExit != nil {
-				_ = runLockedThreadWork(onExit)
+				if err := runLockedThreadWork(onExit); err != nil {
+					// Nothing is waiting for this result, and onExit is where
+					// handles are released, so a failure here means a leak.
+					slog.Error("capture thread cleanup failed", "error", err.Error())
+				}
 			}
 			return
 		}
@@ -78,6 +84,7 @@ func runLockedThreadWork(fn func()) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic on capture thread: %v", r)
+			slog.Error("panic on capture thread", "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
 		}
 	}()
 	fn()

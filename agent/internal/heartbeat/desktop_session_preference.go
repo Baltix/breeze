@@ -16,8 +16,11 @@ import (
 // 3). An explicitly targeted session never reaches this; the viewer's session
 // switcher still offers the console.
 //
-// Only sessions for which capable reports a capture-capable helper qualify,
-// and the first in WTS enumeration order wins.
+// It applies only when exactly one active, signed-in RDP session exists, and
+// that session has a capture-capable helper. With several, which user's desktop
+// the technician meant is a guess — on a terminal server the console sits at
+// the sign-in screen almost permanently — so the console is kept and the
+// viewer's session switcher is the way to reach a specific user.
 func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbroker.DetectedSession, capable func(winSession string) bool) string {
 	consoleAtSignIn := false
 	for _, ds := range detected {
@@ -29,15 +32,20 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 	if !consoleAtSignIn {
 		return ""
 	}
+	candidate := ""
 	for _, ds := range detected {
 		if ds.Session == consoleID || ds.Type != "rdp" || ds.State != "active" || ds.Username == "" {
 			continue
 		}
-		if capable(ds.Session) {
-			return ds.Session
+		if candidate != "" {
+			return "" // more than one signed-in RDP user: ambiguous
 		}
+		candidate = ds.Session
 	}
-	return ""
+	if candidate == "" || !capable(candidate) {
+		return ""
+	}
+	return candidate
 }
 
 // activeRemoteHelperOverSignInConsole is the live wiring of
@@ -47,27 +55,30 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 func (h *Heartbeat) activeRemoteHelperOverSignInConsole(consoleID string) *sessionbroker.Session {
 	detected, err := sessionbroker.NewSessionDetector().ListSessions()
 	if err != nil {
-		log.Debug("findActiveHelper: could not list sessions for the sign-in console check", "error", err.Error())
+		log.Warn("findActiveHelper: could not list sessions, so a console at the sign-in screen cannot be detected; keeping the console-first choice",
+			"error", err.Error())
 		return nil
 	}
-	helpers := make(map[string]*sessionbroker.Session)
-	for _, s := range h.sessionBroker.SessionsWithScope("desktop") {
-		caps := s.GetCapabilities()
-		if caps == nil || !caps.CanCapture || isWinSessionDisconnected(s.WinSessionID) {
-			continue
+	// Same selector, and so the same tie-break between several helpers in one
+	// session, as every other desktop start: FindCapableSession with an
+	// explicit target, which also rejects a disconnected session.
+	helperFor := func(winSession string) *sessionbroker.Session {
+		s := h.sessionBroker.FindCapableSession("capture", winSession)
+		if s == nil || s.WinSessionID != winSession {
+			return nil
 		}
-		if _, seen := helpers[s.WinSessionID]; !seen {
-			helpers[s.WinSessionID] = s
-		}
+		return s
 	}
 	id := activeRemoteSessionOverSignInConsole(consoleID, detected, func(w string) bool {
-		_, ok := helpers[w]
-		return ok
+		return helperFor(w) != nil
 	})
 	if id == "" {
 		return nil
 	}
-	picked := helpers[id]
+	picked := helperFor(id)
+	if picked == nil {
+		return nil
+	}
 	log.Warn("findActiveHelper: console is at the sign-in screen; picked the active RDP session",
 		"winSession", picked.WinSessionID, "helperSession", picked.SessionID, "consoleID", consoleID)
 	return picked

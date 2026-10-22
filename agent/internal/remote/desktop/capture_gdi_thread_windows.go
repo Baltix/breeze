@@ -39,6 +39,14 @@ type gdiThreadState struct {
 	originalDesktop uintptr
 	lastAttachLog   time.Time
 
+	// followIssue is why the last followInputDesktop could not tell whether
+	// the thread was on the input desktop (OpenInputDesktop failed, or a
+	// desktop name was unreadable). Capture goes on with the current desktop
+	// in that case, so this is not an error by itself, but when the frame
+	// then fails it is the likely cause and is attached to the frame error.
+	followIssue        error
+	lastFollowIssueLog time.Time
+
 	// Throttling for GDI handles Win32 refused to free. Separate from the
 	// capture-failure counters because a leak is a different problem with a
 	// different remedy, and it must not be hidden by the capture throttle.
@@ -52,13 +60,13 @@ func (s *gdiThreadState) capture() (*image.RGBA, error) {
 	if err := s.followInputDesktop(); err != nil {
 		return nil, err
 	}
-	var lastErr error
+	var errs [2]error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt == 1 {
 			s.releaseHandles()
 		}
 		if err := s.ensureHandles(); err != nil {
-			lastErr = err
+			errs[attempt] = err
 			continue
 		}
 		img := captureImagePool.Get(s.width, s.height)
@@ -72,9 +80,19 @@ func (s *gdiThreadState) capture() (*image.RGBA, error) {
 			return img, nil
 		}
 		captureImagePool.Put(img)
-		lastErr = err
+		errs[attempt] = err
 	}
-	return nil, lastErr
+	// The first attempt's error is the one with the original handles and is
+	// the one reported (and unwrapped for its Win32 code); the retry's is
+	// kept as context rather than replacing it.
+	err := errs[0]
+	if errs[1] != nil && errs[1].Error() != errs[0].Error() {
+		err = fmt.Errorf("%w (retry with rebuilt handles: %v)", errs[0], errs[1])
+	}
+	if s.followIssue != nil {
+		err = fmt.Errorf("%w; capture thread may not be on the input desktop: %v", err, s.followIssue)
+	}
+	return nil, err
 }
 
 // followInputDesktop attaches this thread to the current input desktop when it
@@ -88,18 +106,28 @@ func (s *gdiThreadState) capture() (*image.RGBA, error) {
 // switch), so a failed attach is returned as the frame's error: it is the
 // cause the technician needs, not the BitBlt failure that would follow it.
 func (s *gdiThreadState) followInputDesktop() error {
-	inputDesk, _, _ := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
+	s.followIssue = nil
+	inputDesk, _, openErrno := procOpenInputDesktop.Call(0, 0, uintptr(desktopGenericAll))
 	if inputDesk == 0 {
 		// No input desktop this process can open (a disconnected session, or
 		// mid-transition). Capture whatever this thread is attached to, which
-		// is what the capturer always did.
+		// is what the capturer always did — but keep the reason, because an
+		// access denial here on Winlogon would otherwise surface only as the
+		// BitBlt failure it causes.
+		s.noteFollowIssue(gdiCallError("OpenInputDesktop", openErrno))
 		return nil
 	}
 	inputName := desktopName(inputDesk)
 	tid := currentThreadID()
 	current, _, _ := procGetThreadDesktop.Call(uintptr(tid))
 	currentName := desktopName(current)
-	if inputName == "" || strings.EqualFold(inputName, currentName) {
+	if inputName == "" {
+		procCloseDesktop.Call(inputDesk)
+		s.noteFollowIssue(fmt.Errorf("input desktop name is unreadable (GetUserObjectInformationW); thread desktop is %s",
+			quoteDesktopName(currentName)))
+		return nil
+	}
+	if strings.EqualFold(inputName, currentName) {
 		procCloseDesktop.Call(inputDesk)
 		return nil
 	}
@@ -125,6 +153,22 @@ func (s *gdiThreadState) followInputDesktop() error {
 	slog.Info("GDI capture thread attached to input desktop",
 		"from", currentName, "to", inputName, "thread", tid)
 	return nil
+}
+
+// noteFollowIssue records why the input desktop could not be checked and logs
+// it, throttled, with its Win32 code.
+func (s *gdiThreadState) noteFollowIssue(err error) {
+	s.followIssue = err
+	now := time.Now()
+	if now.Sub(s.lastFollowIssueLog) < 5*time.Second {
+		return
+	}
+	s.lastFollowIssueLog = now
+	attrs := []any{"error", err.Error()}
+	if code, ok := win32ErrorCode(err); ok {
+		attrs = append(attrs, "win32Error", code)
+	}
+	slog.Warn("GDI capture thread could not check the input desktop; capturing on its current desktop", attrs...)
 }
 
 func (s *gdiThreadState) logAttachFailure(err error, from, to string, tid uint32) {
@@ -188,6 +232,8 @@ func (s *gdiThreadState) ensureHandles() error {
 				gdiCallError("GetDC(0)", getDCErrno))
 		}
 		screenDCOwned = false
+		slog.Debug("CreateDC(DISPLAY) failed; using GetDC(0)",
+			"error", gdiCallError("CreateDC(DISPLAY)", createDCErrno).Error())
 	}
 	freeScreenDC := func() { releaseScreenDC(hdc, screenDCOwned) }
 
@@ -325,13 +371,23 @@ func (s *gdiThreadState) shutdown() {
 	if s.desktop == 0 {
 		return
 	}
-	if s.originalDesktop != 0 {
-		if ret, _, _ := procSetThreadDesktop.Call(s.originalDesktop); ret != 0 {
-			procCloseDesktop.Call(s.desktop)
-			s.desktop = 0
-			return
-		}
+	if s.originalDesktop == 0 {
+		// Cannot happen while followInputDesktop is the only writer of
+		// s.desktop, but the leak is worth naming if that ever changes.
+		slog.Warn("GDI capture thread has no starting desktop to return to; one desktop handle is leaked",
+			"desktop", desktopName(s.desktop))
+		return
 	}
-	slog.Warn("GDI capture thread could not leave its input desktop; one desktop handle is leaked",
-		"desktop", desktopName(s.desktop))
+	ret, _, errno := procSetThreadDesktop.Call(s.originalDesktop)
+	if ret != 0 {
+		procCloseDesktop.Call(s.desktop)
+		s.desktop = 0
+		return
+	}
+	err := setThreadDesktopError(desktopName(s.desktop), desktopName(s.originalDesktop), errno)
+	attrs := []any{"error", err.Error()}
+	if code, ok := win32ErrorCode(err); ok {
+		attrs = append(attrs, "win32Error", code)
+	}
+	slog.Warn("GDI capture thread could not leave its input desktop; one desktop handle is leaked", attrs...)
 }

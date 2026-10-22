@@ -237,7 +237,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 	// changed since, so there is nothing to redo: without this check every
 	// 500ms tick re-detected the same "change", tore the fallback down and
 	// rebuilt it (#9558).
-	if gdiAlreadyFollowsInputDesktop(c.gdiFallback != nil, c.gdiFollowsDesktop, inputName) {
+	if gdiAlreadyFollowsInputDesktop(c.gdiFallback != nil, c.gdiFollowsDesktop, inputName, time.Since(c.gdiFollowsSince)) {
 		procCloseDesktop.Call(inputDesk)
 		return false
 	}
@@ -267,6 +267,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.gdiNoFrameCount = 0
 		c.gdiFallback = &gdiCapturer{config: c.config}
 		c.gdiFollowsDesktop = inputName
+		c.gdiFollowsSince = time.Now()
 
 		attrs := []any{"from", currentName, "to", inputName, "error", switchErr.Error()}
 		if code, ok := win32ErrorCode(switchErr); ok {

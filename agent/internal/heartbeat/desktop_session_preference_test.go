@@ -39,11 +39,22 @@ func TestActiveRemoteSessionOverSignInConsole(t *testing.T) {
 			[]sessionbroker.DetectedSession{signInConsole, {Session: "2", State: "active", Type: "console", Username: "bob"}}, all, ""},
 		{"console not enumerated", "1",
 			[]sessionbroker.DetectedSession{activeRDP}, all, ""},
-		{"first capable active RDP session wins", "1",
+		// Terminal server: several signed-in RDP users. Picking one would be a
+		// guess at whose desktop the technician meant.
+		{"two active RDP users is ambiguous", "1",
 			[]sessionbroker.DetectedSession{signInConsole,
 				{Session: "2", State: "active", Type: "rdp", Username: "a"},
 				{Session: "3", State: "active", Type: "rdp", Username: "b"}},
-			func(s string) bool { return s == "3" }, "3"},
+			all, ""},
+		{"two active RDP users, only one with a helper, is still ambiguous", "1",
+			[]sessionbroker.DetectedSession{signInConsole,
+				{Session: "2", State: "active", Type: "rdp", Username: "a"},
+				{Session: "3", State: "active", Type: "rdp", Username: "b"}},
+			func(s string) bool { return s == "3" }, ""},
+		{"a disconnected second RDP user does not make it ambiguous", "1",
+			[]sessionbroker.DetectedSession{signInConsole, activeRDP,
+				{Session: "3", State: "disconnected", Type: "rdp", Username: "b"}},
+			all, "2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := activeRemoteSessionOverSignInConsole(tc.console, tc.detected, tc.capable); got != tc.want {
