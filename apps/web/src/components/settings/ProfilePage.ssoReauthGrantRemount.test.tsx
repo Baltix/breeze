@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -48,7 +49,7 @@ vi.mock('./EmailNotificationSettings', () => ({ default: () => null }));
 vi.mock('./ConnectSsoCard', () => ({ default: () => null }));
 
 import ProfilePage from './ProfilePage';
-import { stashSsoReauthIntent } from '@/lib/ssoReauthIntent';
+import { stashSsoReauthIntent, type SsoReauthIntent } from '@/lib/ssoReauthIntent';
 import {
   SSO_REAUTH_GRANT_CLIENT_TTL_MS,
   SSO_REAUTH_GRANT_KEY,
@@ -115,7 +116,7 @@ function routeFetch(overrides: Overrides = {}) {
 }
 
 /** The IdP return leg: the callback's fragment plus the card the trip started from. */
-function landFromIdp(intent: 'passkey' | 'totp') {
+function landFromIdp(intent: SsoReauthIntent) {
   stashSsoReauthIntent(intent);
   window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
 }
@@ -284,20 +285,23 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
     expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
   });
 
-  // A grant the page did not adopt (here: the auth store had no user yet, so
-  // the stash could not be checked) must not outlive a NEW trip, or it could be
-  // restored against the new trip's intent if that trip comes back with an error.
+  // A grant the page did not adopt (here: no user was known at mount — the
+  // auth store is empty and the page is still fetching /users/me — so the stash
+  // could not be checked) must not outlive a NEW trip, or it could be restored
+  // against the new trip's intent if that trip comes back with an error.
   it('clears a leftover grant when a new IdP trip starts', async () => {
     stashSsoReauthGrant(GRANT, 'passkey', 'user-1');
     authState.user = null;
     routeFetch({
+      '/users/me': () => makeJsonResponse(passwordlessUser),
       '/sso/reauth/start': () => makeJsonResponse({ authUrl: 'https://idp.example.com/authorize' }),
     });
     const assignMock = vi.fn();
     const realLocation = window.location;
 
     try {
-      await mountPage();
+      render(<ProfilePage />);
+      await screen.findByText(/No passkeys are registered/i);
       expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).not.toBeNull();
       Object.defineProperty(window, 'location', {
         configurable: true,
@@ -311,5 +315,115 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
     }
+  });
+
+  // StrictMode's dev-only effect replay keeps the component instance (and its
+  // ref) but runs the mount effect twice. The second pass finds no fragment and
+  // a freshly written stash — without the routed-ref guard it would restore the
+  // grant and fire a SECOND /mfa/setup, minting a second TOTP secret.
+  it('routes once under StrictMode: a single /mfa/setup on the TOTP landing', async () => {
+    landFromIdp('totp');
+    routeFetch();
+
+    render(<StrictMode><ProfilePage initialUser={passwordlessUser} /></StrictMode>);
+    await screen.findByText(/Set up authenticator/i);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(callTo('/auth/mfa/setup')).toHaveLength(1);
+  });
+
+  it('overwrites an older stash with the grant and intent the fragment brings back', async () => {
+    stashSsoReauthGrant('11111111-2222-4333-8444-555555555555', 'passkey', 'user-1');
+    landFromIdp('totp');
+    routeFetch();
+
+    render(<ProfilePage initialUser={passwordlessUser} />);
+    await screen.findByText(/Set up authenticator/i);
+
+    expect(JSON.parse(String(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY))))
+      .toMatchObject({ grantId: GRANT, intent: 'totp', userId: 'user-1' });
+    expect(JSON.parse(String(callTo('/auth/mfa/setup')[0][1]?.body))).toEqual({ ssoReauthGrantId: GRANT });
+  });
+
+  it('falls back to the page user when the auth store has no user yet', async () => {
+    authState.user = null;
+    landFromIdp('passkey');
+    routeFetch();
+
+    await mountPage();
+
+    expect(JSON.parse(String(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY))))
+      .toMatchObject({ grantId: GRANT, userId: 'user-1' });
+  });
+
+  // #4045 management trips: the grant stands in for the password on one
+  // action, and a remount must put the user back on that action's view.
+  describe('factor-management intents (#4045)', () => {
+    const enrolledUser = { ...passwordlessUser, mfaEnabled: true, mfaMethod: 'totp' as const };
+    const fillDigits = (value: string) => {
+      document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"][maxlength="1"]')
+        .forEach((input, index) => fireEvent.change(input, { target: { value: value[index] } }));
+    };
+
+    async function landThenRemount(intent: SsoReauthIntent, passkeys: unknown[] = []) {
+      landFromIdp(intent);
+      routeFetch({
+        '/auth/passkeys': () => makeJsonResponse({ passkeys }),
+        '/auth/mfa/disable': () => makeJsonResponse({ success: true }),
+      });
+      const first = render(<ProfilePage initialUser={enrolledUser} />);
+      await waitFor(() => expect(callTo('/auth/passkeys').length).toBeGreaterThan(0));
+      first.unmount();
+      expect(window.location.hash).toBe('');
+      render(<ProfilePage initialUser={enrolledUser} />);
+    }
+
+    it('reopens the recovery-code view on a remount', async () => {
+      await landThenRemount('recovery_codes');
+
+      expect(await screen.findByTestId('mfa-recovery-regenerate')).toBeTruthy();
+      expect(screen.queryByTestId('mfa-recovery-sso-reauth')).toBeNull();
+      expect(callTo('/auth/mfa/setup')).toHaveLength(0);
+    });
+
+    it('reopens the disable view on a remount, and the spend clears the stash', async () => {
+      await landThenRemount('disable_mfa');
+
+      const submit = await screen.findByRole('button', { name: /^Disable MFA$/i });
+      expect(callTo('/auth/mfa/setup')).toHaveLength(0);
+      fillDigits('654321');
+      fireEvent.click(submit);
+      await screen.findByText(/Multi-factor authentication disabled/i);
+
+      expect(JSON.parse(String(callTo('/auth/mfa/disable')[0][1]?.body)))
+        .toEqual({ code: '654321', ssoReauthGrantId: GRANT });
+      expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+    });
+
+    it('returns ready to delete a passkey on a remount', async () => {
+      await landThenRemount('delete_passkey', [{ id: 'pk-1', name: 'YubiKey' }]);
+
+      expect(await screen.findByText(/Identity verified\. Choose Delete on the passkey/i)).toBeTruthy();
+      expect(screen.queryByTestId('passkey-delete-sso-reauth')).toBeNull();
+      expect(callTo('/auth/mfa/setup')).toHaveLength(0);
+    });
+
+    it('clears the stash when a management action rejects the grant as dead', async () => {
+      landFromIdp('disable_mfa');
+      routeFetch({
+        '/auth/mfa/disable': () => makeJsonResponse({
+          error: 'Your identity verification has expired.',
+          code: 'sso_reauth_grant_expired',
+        }, false, 400),
+      });
+      render(<ProfilePage initialUser={enrolledUser} />);
+
+      const submit = await screen.findByRole('button', { name: /^Disable MFA$/i });
+      fillDigits('654321');
+      fireEvent.click(submit);
+      await screen.findByText(/verification has expired\. Verify again to confirm this change/i);
+
+      expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+    });
   });
 });

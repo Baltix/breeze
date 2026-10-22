@@ -628,7 +628,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     // (`?ssoReauthError=`) has nothing to route, and an intent left behind
     // would misroute the NEXT round-trip instead.
     const takenIntent = takeSsoReauthIntent();
-    const viewerId = useAuthStore.getState().user?.id ?? null;
+    // The persisted auth store is the live page's only source at this point
+    // (`<ProfilePage client:load />` has no initialUser, and /users/me is still
+    // in flight); `initialUser` covers callers that pass the user in.
+    const viewerId = useAuthStore.getState().user?.id ?? initialUser?.id ?? null;
     let grantId: string;
     let intent: SsoReauthIntent | null;
     if (fragmentGrantId) {
