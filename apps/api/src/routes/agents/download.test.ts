@@ -1316,7 +1316,7 @@ describe('install.sh — Linux data dir, breeze group and agent version floor (#
         { mode: 0o755 },
       );
       const harness = join(tmp, 'harness.sh');
-      writeFileSync(harness, `fatal() { echo "FATAL: $*"; exit 1; }\nTMPFILE='${bin}'\n${block}\necho PASSED\n`);
+      writeFileSync(harness, `set -euo pipefail\nfatal() { echo "FATAL: $*"; exit 1; }\nTMPFILE='${bin}'\n${block}\necho PASSED\n`);
       return new Promise((resolve) => {
         execFile('bash', [harness], (err, stdout, stderr) => {
           resolve({ code: err && typeof err.code === 'number' ? err.code : err ? 1 : 0, output: `${stdout}${stderr}` });
@@ -1332,7 +1332,7 @@ describe('install.sh — Linux data dir, breeze group and agent version floor (#
       expect(r.output).toContain('BREEZE_VERSION');
     });
 
-    it.each(['Breeze Agent v0.118.0', 'Breeze Agent v0.124.0', 'Breeze Agent v1.0.0', 'Breeze Agent v0.200.1'])(
+    it.each(['Breeze Agent v0.118.0', 'Breeze Agent v0.124.0', 'Breeze Agent v1.0.0', 'Breeze Agent v0.200.1', 'Breeze Agent v10.2.3'])(
       'lets %s through',
       async (out) => {
         const r = await runFloor(out);

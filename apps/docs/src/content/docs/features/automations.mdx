@@ -64,7 +64,7 @@ Instead of recreating the same automation in every customer organization, a part
 - Ownership is chosen at creation time (**This organization only** vs **All organizations (partner-wide automation)**) and can't be changed afterward. To move an automation between an org and partner-wide, delete and recreate it.
 - **Event triggers fan out**: an event (e.g. `device.offline`, `alert.triggered`) occurring in any member organization matches the partner's partner-wide automations, in addition to that org's own automations.
 - Any alert, deployment, or notification an automation's actions create always belongs to the **target device's own organization**, not the partner -- so `create_alert`, `deploy_software`, and `send_notification` actions stay correctly scoped even when the triggering automation is partner-wide.
-- Partner-wide automations show an **Partner-wide** badge in the automations list. Updating, deleting, or manually triggering one requires the same partner-wide management access as creating it.
+- Partner-wide automations show a **Partner-wide** badge in the automations list. Updating, deleting, or manually triggering one requires the same partner-wide management access as creating it.
 
 ---
 
@@ -82,7 +82,7 @@ An automation can target saved [device groups](/features/device-groups/). In **D
 
 ## Managing Automations
 
-The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle. Partner-wide automations show an **Partner-wide** badge next to their name.
+The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle. Partner-wide automations show a **Partner-wide** badge next to their name.
 
 - **Search and filter.** Use the search bar to find automations by name or description. Filter by trigger type (Schedule, Event, Webhook, Manual) or by status (Enabled / Disabled).
 - **Enable or disable.** Toggle the switch in the Enabled column. Disabled automations do not fire on schedule or in response to events.

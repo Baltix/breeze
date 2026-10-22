@@ -1355,7 +1355,7 @@ success "Verified agent binary checksum"
 MIN_AGENT_VERSION="0.118.0"
 chmod 755 "\$TMPFILE" 2>/dev/null || true
 DOWNLOADED_VERSION_RAW="$("\$TMPFILE" version 2>/dev/null | head -n 1)" || DOWNLOADED_VERSION_RAW=""
-DOWNLOADED_VERSION="$(printf '%s' "\$DOWNLOADED_VERSION_RAW" | sed -n 's/.*[vV]\\{0,1\\}\\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' | head -n 1)"
+DOWNLOADED_VERSION="$(printf '%s' "\$DOWNLOADED_VERSION_RAW" | sed -n 's/^[^0-9]*\\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' | head -n 1)"
 if [[ -n "\$DOWNLOADED_VERSION" ]]; then
   OLDEST_VERSION="$(printf '%s\\n%s\\n' "\$MIN_AGENT_VERSION" "\$DOWNLOADED_VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | head -n 1)"
   if [[ "\$DOWNLOADED_VERSION" != "\$MIN_AGENT_VERSION" && "\$OLDEST_VERSION" == "\$DOWNLOADED_VERSION" ]]; then
