@@ -387,6 +387,14 @@ describe('extractApiError — zValidator field errors render with readable label
     expect(extractApiError(body, FALLBACK)).toBe('Email: Invalid email address; Required; Name: Required');
   });
 
+  it('keeps a route headline that is not the raw-path rendering, while deduping the details', () => {
+    const body = {
+      error: 'Remediation request rejected',
+      details: { formErrors: [], fieldErrors: { 'ids.0': ['Invalid UUID'], 'ids.1': ['Invalid UUID'] } },
+    };
+    expect(extractApiError(body, FALLBACK)).toBe('Remediation request rejected: IDs: Invalid UUID');
+  });
+
   it('does not repeat a label the message already starts with', () => {
     const body = wrapperBody([], {
       'settings.notifications.slackWebhookUrl': [

@@ -115,6 +115,21 @@ describe('SoftwareGroupTable', () => {
       expect(cell).not.toHaveTextContent('Update to');
     });
 
+    it('Ready leads with the device split and keeps the target as context (table and cards)', async () => {
+      const desktop = await renderWith({ targetVersion: '126.0.1' });
+      expect(desktop.getByTestId(`software-group-patch-${KEY}`)).toHaveTextContent('Ready · 12/14 devices');
+      expect(desktop.getByTestId(`software-group-target-${KEY}`)).toHaveTextContent('Update to 126.0.1');
+      const cards = within(screen.getByTestId('responsive-table-cards'));
+      expect(cards.getByText('Ready · 12/14 devices')).toHaveAttribute('title', expect.stringContaining('pending on the device and approved'));
+    });
+
+    it('the cards show the same non-Ready answers', async () => {
+      await renderWith({ patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: true, targetVersion: null });
+      const cards = within(screen.getByTestId('responsive-table-cards'));
+      expect(cards.getByText('Update to latest')).toBeInTheDocument();
+      expect(cards.queryByText(/^Ready/)).toBeNull();
+    });
+
     it('explains the vocabulary in a header tooltip', async () => {
       const desktop = await renderWith({});
       fireEvent.click(desktop.getByRole('button', { name: 'About the Patch column' }));

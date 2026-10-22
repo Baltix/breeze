@@ -22,8 +22,12 @@ export function groupPatchState(
   return 'none';
 }
 
-export function cvePatchState(v: Pick<FleetVulnerability, 'patchReadyDeviceCount' | 'patchAvailable'>): PatchState {
+export function cvePatchState(
+  v: Pick<FleetVulnerability, 'patchReadyDeviceCount' | 'patchAvailable' | 'statuses'>,
+): PatchState {
   if (v.patchReadyDeviceCount > 0) return 'ready';
+  // Every finding already patched: there is nothing left to update.
+  if (v.statuses.length > 0 && v.statuses.every((s) => s === 'patched')) return 'none';
   if (v.patchAvailable) return 'update';
   return 'none';
 }
